@@ -1,93 +1,99 @@
 # DeltaForce Filter Manager
 
-面向《三角洲行动》的 Windows 显示器色彩调试工具。原生暗色 GUI，可用游戏截图对照调节暗部、中间调、高光和色彩，支持手动开启、游戏进程联动和托盘运行。
+面向《三角洲行动》的 Windows 显示器色彩调试工具。**HTML / CSS / TypeScript 界面 + Rust / Tauri 2 后台**，用本机参考图片对照暗部、中间调、高光与 RGB，支持 ICC、NVIDIA 数字振动、手动开启、游戏进程联动和托盘。
 
-使用 **C# / .NET 10 + WinForms + Win32/NVAPI**，无 WebView、Electron、后台网络请求或第三方运行时包依赖。手动模式不检测进程；跟随模式默认每 3 秒只查询指定进程名；最小化到托盘时释放参考图片缓存。
+**[下载最新版客户端](https://github.com/CodeWriter-Jay/DeltaForceFilterManager/releases/latest)**
 
-## 功能
+- **安装版**：下载 `win-x64-setup.exe`，安装器在缺少 WebView2 时安装共享运行时。
+- **便携版**：下载 `win-x64-portable.zip`，解压到固定目录，运行 `DeltaForceFilterManager.exe`。
+- **单文件客户端**：下载 `win-x64.exe` 直接运行；需要本机已有 WebView2。建议固定文件名/目录后再设置自启。
 
-| 功能 | 实现 |
+支持 Windows 10/11 x64、SDR。便携版和单文件 EXE 使用系统 **Microsoft Edge WebView2**，不捆绑 Chromium、完整 WebView2 或 .NET。客户端下载在 Release 的 **Assets** 中；Actions 中的 artifact 是构建验证包。
+
+## v0.2.0 的变化
+
+- 替换 WinForms，采用 HTML 工作台：参考图片左右分屏、RGB 曲线、参数面板、方案与设置页；无远程字体或前端资源。
+- 替换 .NET 后台，使用 Rust + Win32/WCS/NVAPI。**v0.1.0 的 47,410,780 字节 ZIP 捆绑了完整 .NET Desktop Runtime**，其中单文件 EXE 约 111 MiB；这不是色彩算法本身的大小。新版共享系统 WebView2，实际客户端大小见 Release。
+- 修复本版与参考项目 [issue #8](https://github.com/q974491089/filter-manage/issues/8) 症状相关的缺陷：启用时切换方案会真正应用完整参数；ICC/NVIDIA 操作先完成，最后一次写入整套 RGB LUT；即时回读后，在 200、400、800 ms 处复查并有限重试，再等 400 ms 做最终确认。失败时恢复原始状态，恢复失败保留备份并阻止继续应用。
+- 保持 v0.1.0 的设置与恢复备份 JSON 格式（PascalCase、SchemaVersion 1）。未完成的旧备份在启动时优先恢复。
+- 关闭到托盘时**销毁 WebView 窗口**，释放界面和图片缓存；再打开重新创建窗口，保留当前草稿和本次选中的参考图片路径。图片内容不写入设置。
+
+issue #8 没有经过确认的根因。本项目回归测试模拟了“写入成功后曲线延迟被重置、数字振动仍保留”的情况，修复的是本项目实际存在的应用顺序、切换和校验缺陷；尚未在问题报告者的显示器/驱动上验证。
+
+## 功能与使用
+
+| 功能 | 行为 |
 | --- | --- |
-| ICC 管理 | 扫描系统与本机导入目录，导入/导出 `.icc` / `.icm`，WCS 当前用户默认配置切换 |
+| ICC 管理 | 扫描系统与本机导入目录，导入/导出 `.icc` / `.icm`，切换 WCS 当前用户默认配置 |
 | 显示器调色 | 亮度 −125…125、对比度 −82…82、Gamma 0.4…2.8、RGB 增益 −100…100 |
-| NVIDIA 数字振动 | 0…100%，精确匹配显示器，使用驱动实际范围并回读校验；可选，不支持时返回错误 |
-| 明暗优化 | 暗部提升、高光压缩；内置均衡、室内、室外、中性起始方案 |
-| 参考图片 | 导入或拖入 PNG/JPEG/BMP；仅本机读取；分屏原图/调整后对照，鼠标或方向键移动分隔线 |
-| 曲线预览 | 图片使用与显示器相同的 RGB LUT；同时显示 RGB 曲线；数字振动不做图像模拟 |
-| 手动与自动模式 | 一键启用；可选跟随指定 `.exe`，最后一个匹配进程退出后恢复原始状态 |
-| 自启与托盘 | 可选随 Windows 登录进入托盘；关闭窗口进入托盘；可选退出时恢复 |
-| 方案管理 | 保存、另存、删除、JSON 导入/导出；跨电脑导入后重新选择本机 ICC |
-| 原始状态恢复 | 启用前持久化备份 ICC 状态、Gamma Ramp、可用的 NVIDIA 数字振动；应用失败回滚；异常退出后下次启动尝试恢复 |
-| 多显示器 | 选择具体显示器；备份以显示器身份匹配；恢复前不允许切换调节目标 |
-| 快捷键 | `Ctrl+Shift+F10` 手动开关；`Ctrl+Shift+F11` 恢复；占用冲突会提示 |
+| 明暗调节 | 暗部提升、高光压缩；内置均衡、室内、室外、中性起始方案 |
+| NVIDIA 数字振动 | 可选 0…100%，匹配具体显示器，使用驱动真实范围，写后回读 |
+| 参考图片 | 选择/拖入 PNG、JPEG、BMP，最大 25 MB / 3200 万像素；本机处理，不上传；箭头键/鼠标移动分隔线 |
+| 方案管理 | 保存、另存、删除、JSON 导入/导出；跨电脑导入后重新选择本机 ICC；切换前处理未保存草稿 |
+| 手动 / 游戏联动 | 手动模式不查询进程；联动模式默认每 3 秒查询一次进程列表，最后一个匹配进程退出后恢复 |
+| 自启 / 托盘 | 设置中独立开关随登录进入托盘、关闭到托盘、退出时恢复；托盘打开/开关/恢复/退出 |
+| 事务与恢复 | 首次修改前持久化 ICC、Gamma 和可用的 NVIDIA 原始状态；失败回滚；异常退出下次启动恢复 |
+| 多显示器 | 按显示器身份定位；恢复前不允许更换调节目标；断开时保留备份 |
+| 快捷键 | `Ctrl+Shift+F10` 开关、`Ctrl+Shift+F11` 恢复；冲突会显示错误 |
 
-## 运行
+1. 选择显示器与起始方案，导入一张包含室内暗部与室外亮部的游戏截图。
+2. 适度调整 Gamma 和暗部，再看高光，最后调 RGB 和可选数字振动。点击 **开启滤镜 / 应用当前调整** 写入显示器。
+3. 用 **A/B 原始对照** 比较实际显示器效果；点击 **保存方案** 保留参数。启用状态下切换已保存方案会立即应用。
+4. 如需自动启用，在设置中通过 **选择运行中的进程** 确认真实游戏进程，指定自动方案，再切换 **跟随游戏**。
+5. 需要开机启动时，在设置中开启 **随 Windows 登录启动** 并保存。更换 EXE 名称/目录后重新保存此项。
 
-支持 Windows 10/11 **x64、SDR**。NVIDIA 数字振动需要显示器由 NVIDIA 显卡直接输出，并且驱动提供相应 NVAPI 接口；其他显卡可使用 ICC 和 Gamma 调色。
+默认 `DeltaForceClient-Win64-Shipping.exe`、`DeltaForceClient.exe` 仅是候选名，可能随平台/版本变化；多个名称是“任一匹配”。自动模式中手动恢复会暂停本次游戏会话的自动应用，直到游戏退出；自动启用后手动更新仍保留游戏退出时恢复的行为。关闭跟随模式会恢复由自动模式拥有的滤镜。没有永久高频校色线程。
 
-1. 在 [Releases](https://github.com/CodeWriter-Jay/DeltaForceFilterManager/releases) 下载 Windows x64 压缩包。解压到固定目录，运行 `DeltaForceFilterManager.exe`。自包含版本不需另装 .NET。
-2. 选择显示器和起始方案，导入一张包含暗部与天空亮部的游戏截图。
-3. 先适度调整 Gamma / 暗部提升，再调整高光压缩。观察黑阶是否可区分、亮部是否过灰，最后调 RGB 和可选数字振动。
-4. 点击 **开启 / 应用滤镜**，用 **A/B 原始对照**比较整个显示器效果；点击 **保存当前方案**保留参数。
-5. 如需自动运行，在应用设置选择真实游戏进程和自动应用方案，保存后打开左侧的 **跟随游戏进程自动开启**。
-6. 开机启动在设置中单独启用。更换程序目录后，需要重新保存自启设置。
+## 色彩行为与验证范围
 
-内置进程名 `DeltaForceClient-Win64-Shipping.exe` 和 `DeltaForceClient.exe` 只是候选，不同发行平台和版本可能不同。请在游戏运行时通过 **选择运行中的进程**确认真实名称。多个名称是“任一匹配”，不是启动器和游戏的先后顺序规则。
+ICC 的色彩描述与校准曲线不同：有 `vcgt` 时与调整 LUT 叠加，没有时仍关联系统 ICC，但游戏 LUT 使用中性基准；非色彩管理游戏通常不使用 ICC 的矩阵/色域转换。调色基准始终来自启用前备份，方案切换不会累积曲线。高光压缩不能恢复游戏渲染时已裁剪的细节。
 
-自动模式中的手动恢复会保持到当前游戏退出，不会被下一次检测立即覆盖。进程开始时只应用一次，不持续抢占其他校色软件；如果自动应用失败，修复原因后手动应用或重新启动游戏。
+亮度/对比度/Gamma/RGB 使用 Windows Gamma Ramp，与参考项目同类路径；不是 NVIDIA 控制面板数值的精确复制。NVIDIA 数字振动需要显示器由 NVIDIA 显卡直接输出且驱动提供 DVC 扩展接口；不可用时其余调色功能仍可使用。启用数字振动前必须有原始备份。
 
-游戏已自动启用滤镜后，手动更新调节仍保留游戏退出时的恢复行为；单独手动开启的滤镜由用户手动关闭。
+**延迟复查只覆盖有限的应用稳定窗口。** Windows 显示切换、独占全屏、休眠、插拔、夜间模式或其他校色软件仍可能在更晚时间覆盖 LUT，需要重新应用。驱动返回成功也可能静默拒绝，因此读回检查允许 8 位 DAC 的量化误差。开启 HDR/高级色彩时停止 SDR 应用或恢复。克隆显示器共享 GDI source，无法独立调节。
 
-## 色彩行为和边界
+滤镜作用于整个目标显示器，包括本应用；图片分屏用于相对对照，不能精确模拟面板、ICC 色域转换或 NVIDIA 数字振动。导入 ICC 后首次系统安装可能受权限限制；遇到错误可先在 Windows 色彩管理中安装，应用不会静默提权。恢复原始默认配置不会卸载已安装的文件或删除导入关联。
 
-- **ICC 的色彩描述与校准曲线是两件事。** 有 `vcgt` 的 ICC 会把校准曲线和调节 LUT 叠加；没有 `vcgt` 的 ICC 仍关联到 Windows，但游戏 LUT 使用中性基准。非色彩管理游戏通常不会使用 ICC 内的矩阵/色域转换。
-- 亮度、对比度、Gamma 与 RGB 通过 Windows Gamma Ramp 实现，与参考项目当前源码采用同类路径；数字振动通过 NVAPI。参数不是 NVIDIA 控制面板亮度/对比度数值的精确复制，也不调用旧的 `NvCpl.dll` 命令。
-- 高光压缩降低已有亮部的输出；无法恢复游戏渲染时已经裁剪掉的细节。预设只作为起点，不能保证适合所有显示器。
-- HDR/高级色彩开启时停止应用 SDR 曲线。独占全屏、分辨率变化、休眠、显示器插拔、系统夜间模式、其他校色软件可能重置或覆盖 LUT；必要时重新应用。软件不注入游戏、不读取游戏内存，但未验证特定游戏版本的反作弊兼容性。
-- Gamma Ramp 写入返回成功仍可能被驱动静默拒绝，因此会读回验证（允许 8 位 DAC 的量化误差）。曲线过激被拒绝时会回滚并提示。
-- 全屏滤镜会作用于整个目标显示器，包括本应用。图片预览用于相对对照，不能代替测色，也不能精确模拟显示器面板、ICC 色域转换或 NVIDIA 数字振动。
-- 使用 NVIDIA 数字振动时必须先获取其原始备份；当前会话缺少该备份时需先恢复再启用。显示器由核显输出时不会误调另一台 NVIDIA 输出。
-- 克隆显示器共享一个 GDI source，不能单独调节克隆输出。
-- 导入 ICC 先保存到当前用户目录。首次应用若 Windows 拒绝系统安装，先通过 Windows 色彩管理安装该文件，再重试。恢复原始默认配置不会卸载已安装的 ICC 文件，也保留导入文件的关联。
-- 正常退出可以恢复；强制结束/断电时备份只能在下次启动恢复。若原显示器断开、驱动改变或 HDR 开启，恢复可能暂停；备份保留，重新连接/关闭 HDR 后点击恢复。
-- 关闭“退出时恢复”后滤镜可以继续生效，但不会继续监视游戏；下次启动仍尝试恢复备份。参考图片不持久化、不上传。
-
-设置和恢复备份位于 `%LOCALAPPDATA%\DeltaForceFilterManager\`。遇到配置损坏不会静默覆盖。应先保留原文件再处理。紧急恢复可在程序未运行时执行：
+设置和恢复备份：`%LOCALAPPDATA%\DeltaForceFilterManager\`。损坏文件不会静默重置或覆盖。恢复失败会保留备份；重新连接原显示器/关闭 HDR 后重试。关闭“退出时恢复”后仍保留备份，下次启动会恢复。紧急恢复在程序未运行时执行：
 
 ```powershell
 .\DeltaForceFilterManager.exe --restore
 ```
 
+不注入游戏或读取游戏内存。**CI 使用模拟显示器验证事务与界面，没有验证真实 NVIDIA 驱动、游戏全屏、反作弊兼容性或游戏电脑帧率。** Release 附空闲采样，包含主进程与 WebView2 子进程；托盘数据是在销毁 WebView 后采样，不能用主进程数字代替 GUI 总内存。
+
 ## 开发与验证
 
-需要 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。不依赖 NuGet 第三方库；Windows Desktop 目标引用在恢复时获取。
+需要 Node.js 22.12+、Rust stable；Windows 构建需要 MSVC C++ 工具和 WebView2。使用 lockfile 固定依赖。
 
 ```powershell
-dotnet run --project tests/DeltaForceFilter.Core.Tests -c Release
-dotnet build src/DeltaForceFilter.App -c Release
-dotnet run --project src/DeltaForceFilter.App
-dotnet publish src/DeltaForceFilter.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/portable
+npm ci
+cargo test --workspace --locked
+cargo fmt --all -- --check
+cargo clippy --workspace --locked -- -D warnings
+npm run build
+npx playwright install chromium
+npm run test:web
+npm run tauri -- dev
+npm run tauri -- build --target x86_64-pc-windows-msvc
 ```
 
-macOS/Linux 可运行核心测试、交叉编译 Windows 应用；不能执行 Windows GUI 或硬件接口。自包含包包含 .NET Desktop Runtime，发布包大小与后台工作集是不同指标；尚未在真实游戏电脑测量 CPU、内存或帧率变化，不承诺固定占用。
+便携 EXE：`target/x86_64-pc-windows-msvc/release/delta-force-filter-manager.exe`；安装版：相邻 `bundle/nsis/`。macOS 可测试核心和预览 HTML，但硬件调节只在 Windows 实现。浏览器运行 `npm run dev` 会明确标注界面预览，不执行系统调色。
 
-GitHub Actions 自动运行核心测试、Windows 构建、自包含发布和原生 GUI 冒烟测试，上传 `DeltaForceFilterManager-win-x64` artifact。GUI 测试验证 Win32 结构布局、参考图片导入及 Gamma 预览、源图片无锁定，生成工作台/设置/紧凑窗口截图和手动模式短时空闲资源采样。使用临时配置，不应用滤镜、不写自启注册表。CI 采样不代表游戏电脑性能；硬件色彩效果、ICC 安装权限、真实 NVIDIA 驱动、游戏进程联动和实际占用需在目标 Windows PC 上验证。
-
-仓库维护者可手动运行工作流并勾选 `publish_release`，验证通过后会将该次构建直接打包为 GitHub 预览 Release。默认只构建验证；发布权限仅授予该发布任务。
-
-测试覆盖曲线端点与单调性、RGB 与校准叠加、ICC 表/公式和恶意边界、参数验证、原始状态事务、部分失败回滚、恢复文件保留、A/B 和进程状态。
+GitHub Actions 验证 Rust 核心/控制器、HTML 交互、方案切换、参考图片与原生 WebView IPC，并生成完整/紧凑/设置截图及进程树空闲报告。仓库维护者手动运行工作流、勾选 `publish_release` 后，验证通过会发布带 EXE、ZIP、安装包、SHA256 校验和的普通 Release，并设为 latest。
 
 ```text
-src/DeltaForceFilter.Core/   平台无关的参数、曲线、ICC、恢复事务与存储
-src/DeltaForceFilter.App/    原生 GUI、图片对照、WCS/GDI/NVAPI、自启与托盘
-tests/                     可跨平台运行的核心测试，无额外测试包
-.github/workflows/         Windows 构建、GUI 冒烟测试与便携包
+crates/filter-core/   参数、曲线、ICC、图片边界、事务、WCS/GDI/NVAPI、自启与进程
+src-tauri/           Rust 控制器、HTML IPC、托盘、快捷键与窗口生命周期
+web/                 本地 HTML/CSS/TypeScript 工作台
+scripts/             图标源、Windows 原生验证与进程树资源采样
+tests/web/           HTML 交互与视觉验证
 ```
 
 ## 参考依据
 
-功能研究参考 [q974491089/filter-manage](https://github.com/q974491089/filter-manage)，研究版本 `26a563b75c59270837638355b94337e7115fb4b3`（2026-10-12 读取）。该项目除 README 所列 ICC、NVIDIA、保存方案、图片预览外，当前源码也已有 RGB 增益、多显示器、进程规则、自启与快捷键。本项目独立实现并采用原生 WinForms 界面，未复制参考项目的 UI、预设素材或 ICC 文件。
+功能研究参考 [q974491089/filter-manage](https://github.com/q974491089/filter-manage)，研究版本 `26a563b75c59270837638355b94337e7115fb4b3`。独立实现，未复制其 UI、图片或 ICC 素材。
 
-API 依据：[Microsoft WCS](https://learn.microsoft.com/windows/win32/wcs/profile-management-functions)、[Gamma Ramp 限制](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)、[NVIDIA NVAPI](https://github.com/NVIDIA/nvapi)。DVC 扩展接口不在公共 NVAPI SDK 的稳定承诺内，签名交叉参考 [NvAPIWrapper](https://github.com/falahati/NvAPIWrapper) 和 [NVIDIA_NvAPI](https://github.com/jNizM/NVIDIA_NvAPI)，不支持时明确报错。
+API 依据：[Microsoft WCS](https://learn.microsoft.com/windows/win32/wcs/profile-management-functions)、[Gamma Ramp 的平台限制](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)、[Tauri Windows 打包与 WebView2](https://v2.tauri.app/distribute/windows-installer/)、[NVIDIA NVAPI](https://github.com/NVIDIA/nvapi)。DVC 扩展接口未获得公共 NVAPI SDK 稳定承诺，签名交叉参考 [NvAPIWrapper](https://github.com/falahati/NvAPIWrapper) 与 [NVIDIA_NvAPI](https://github.com/jNizM/NVIDIA_NvAPI)，不支持时明确报错。
 
 MIT License。

@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>DeltaForce Filter Manager</title>
+  </head>
+  <body>
+    <div id="boot">正在打开调色工作台…</div>
+    <div id="app" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="#" aria-label="DeltaForce Filter 工作台"
+          ><span class="brand-icon">△</span
+          ><span>DELTA<span class="brand-sub">FILTER STUDIO</span></span></a
+        >
+        <div class="nav-caption">工作空间</div>
+        <nav aria-label="主导航">
+          <button id="nav-work" class="nav-item selected">
+            <span aria-hidden="true">◈</span> 调色工作台</button
+          ><button id="nav-settings" class="nav-item">
+            <span aria-hidden="true">⚙</span> 应用设置
+          </button>
+        </nav>
+        <div class="nav-caption profiles-caption">
+          色彩方案
+          <button id="new-profile" class="icon-button" aria-label="新建方案">
+            ＋
+          </button>
+        </div>
+        <div id="profiles" class="profiles" aria-label="色彩方案"></div>
+        <div class="side-actions">
+          <button id="import-profile">↓ 导入方案</button
+          ><button id="export-profile">↑ 导出方案</button>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="mode-label">启用方式</div>
+          <div class="mode-switch" role="group" aria-label="启用方式">
+            <button id="manual-mode">手动</button
+            ><button id="game-mode">跟随游戏</button>
+          </div>
+          <p id="game-hint">按需开启，后台不检测进程</p>
+          <div class="version">
+            <span class="status-dot"></span> LOCAL · v0.2.0
+          </div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="breadcrumb">
+            工作空间 <span>/</span> <strong id="page-label">调色工作台</strong>
+          </div>
+          <div class="top-actions">
+            <span id="state-chip" class="chip">待启用</span
+            ><button id="compare" class="quiet-button">A/B 原始对照</button
+            ><button id="restore" class="quiet-button">恢复原始色彩</button
+            ><button
+              id="tray"
+              class="icon-button"
+              aria-label="收起到托盘"
+              title="收起到托盘"
+            >
+              ↘
+            </button>
+          </div>
+        </header>
+        <div id="error" class="alert" role="alert" hidden></div>
+        <div id="preview-note" class="preview-note" hidden>
+          界面预览 · 显示器调节需要在 Windows 客户端中运行
+        </div>
+        <main id="work-page" class="work-grid">
+          <section class="studio">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">COLOR WORKSPACE</p>
+                <h1>让画面，清晰一点。</h1>
+                <p class="subtitle">找回暗部层次，平衡室内与室外。</p>
+              </div>
+              <button id="upload-image" class="outline-button">
+                ＋ 参考图片</button
+              ><input
+                id="image-file"
+                type="file"
+                accept="image/png,image/jpeg,image/bmp"
+                hidden
+              />
+            </div>
+            <section class="preview-card" aria-label="参考图片对照">
+              <div class="card-bar">
+                <div>
+                  <span class="small-dot"></span
+                  ><span id="image-name">内置明暗测试图</span>
+                </div>
+                <span class="muted">仅本机处理</span>
+              </div>
+              <div id="image-stage" class="image-stage">
+                <canvas id="original" aria-label="原始参考图片"></canvas
+                ><canvas
+                  id="adjusted"
+                  aria-label="经色彩曲线调整后的参考图片"
+                ></canvas>
+                <div class="image-label original-label">原始</div>
+                <div class="image-label adjusted-label">调整后</div>
+                <div id="divider" class="divider"><span>‹ ›</span></div>
+                <div id="drop-hint" class="drop-hint" hidden>
+                  松开导入参考图片
+                </div>
+              </div>
+              <div class="split-control">
+                <span>原始</span
+                ><input
+                  id="split"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value="50"
+                  aria-label="原始与调整后的分隔位置"
+                /><span>调整后</span
+                ><button
+                  id="reset-split"
+                  class="icon-button"
+                  aria-label="居中分隔线"
+                >
+                  ◫
+                </button>
+              </div>
+            </section>
+            <section class="curve-card">
+              <div class="card-bar">
+                <strong>色调曲线</strong>
+                <div class="curve-key">
+                  <span class="red">R</span><span class="green">G</span
+                  ><span class="blue">B</span>
+                </div>
+              </div>
+              <canvas
+                id="curve"
+                width="640"
+                height="130"
+                aria-label="RGB 输出曲线"
+              ></canvas>
+              <div class="curve-caption">
+                <span>暗部</span><span>中间调</span><span>高光</span>
+              </div>
+            </section>
+            <div class="tip">
+              <span>✧</span>
+              <p>
+                先调 Gamma 与暗部，再看天空高光。参考图片只预览 RGB
+                曲线；数字振动请在显示器上对照。
+              </p>
+            </div>
+            <div class="profile-toolbar">
+              <label for="profile-name">方案名称</label
+              ><input id="profile-name" maxlength="80" /><button
+                id="save-profile"
+                class="outline-button"
+              >
+                保存方案</button
+              ><button id="copy-profile" class="quiet-button">另存为</button
+              ><button
+                id="delete-profile"
+                class="icon-button"
+                aria-label="删除当前方案"
+              >
+                ×
+              </button>
+            </div>
+          </section>
+          <aside class="inspector" aria-label="色彩调节参数">
+            <div class="inspector-heading">
+              <h2>色彩调节</h2>
+              <button id="reset-color" class="quiet-button">重置参数</button>
+            </div>
+            <label class="field-label" for="monitor">目标显示器</label
+            ><select id="monitor"></select>
+            <div class="parameter-group">
+              <h3>明暗层次 <span>TONAL</span></h3>
+              <div id="tonal-parameters"></div>
+            </div>
+            <details class="parameter-group">
+              <summary>RGB 增益 <span>CHANNELS</span></summary>
+              <div id="rgb-parameters"></div>
+            </details>
+            <div class="parameter-group nvidia-group">
+              <div class="toggle-row">
+                <label for="use-vibrance">NVIDIA 数字振动</label
+                ><input id="use-vibrance" type="checkbox" role="switch" />
+              </div>
+              <div id="vibrance-parameter"></div>
+              <p id="nvidia-status" class="field-help"></p>
+            </div>
+            <details class="parameter-group">
+              <summary>ICC 配置 <span>CALIBRATION</span></summary>
+              <label class="sr-only" for="icc">ICC 配置</label
+              ><select id="icc">
+                <option value="">原始显示器校准</option>
+              </select>
+              <div class="icc-actions">
+                <button id="import-icc" class="quiet-button">导入 ICC</button
+                ><button id="export-icc" class="quiet-button">导出 ICC</button>
+              </div>
+              <p class="field-help">
+                有 vcgt 的配置叠加校准曲线；没有则使用中性曲线。
+              </p>
+            </details>
+            <div class="apply-area">
+              <p id="draft-state">当前方案已保存</p>
+              <button id="apply" class="primary-button">
+                <span aria-hidden="true">◈</span> 开启滤镜
+              </button>
+              <p class="apply-note">启用前自动备份原始色彩</p>
+            </div>
+          </aside>
+        </main>
+        <main id="settings-page" class="settings-page" hidden>
+          <p class="eyebrow">PREFERENCES</p>
+          <h1>为你的游戏习惯设置。</h1>
+          <p class="subtitle">自动启用、托盘与恢复，都由你决定。</p>
+          <form id="settings-form">
+            <section class="settings-card">
+              <h2>启动与后台</h2>
+              <label class="setting-row"
+                ><span
+                  ><strong>随 Windows 登录启动</strong
+                  ><small>登录后进入托盘；游戏联动按下方设置执行</small></span
+                ><input id="autostart" type="checkbox" role="switch" /></label
+              ><label class="setting-row"
+                ><span
+                  ><strong>关闭窗口后进入托盘</strong
+                  ><small>关闭界面 WebView，释放图片和界面内存</small></span
+                ><input id="close-tray" type="checkbox" role="switch" /></label
+              ><label class="setting-row"
+                ><span
+                  ><strong>退出程序时恢复原始色彩</strong
+                  ><small
+                    >恢复 ICC、RGB 曲线与已备份的 NVIDIA 数字振动</small
+                  ></span
+                ><input id="restore-exit" type="checkbox" role="switch"
+              /></label>
+            </section>
+            <section class="settings-card">
+              <h2>跟随游戏进程</h2>
+              <label class="field-label" for="process-names"
+                >游戏进程文件名</label
+              >
+              <div class="process-entry">
+                <textarea
+                  id="process-names"
+                  rows="3"
+                  placeholder="每行一个 .exe 文件名"
+                ></textarea
+                ><button id="pick-process" type="button" class="outline-button">
+                  选择运行中的进程
+                </button>
+              </div>
+              <p class="field-help">
+                候选进程名可能随发行平台变化；请在游戏运行时确认。任一匹配即可触发。
+              </p>
+              <div class="settings-fields">
+                <div>
+                  <label class="field-label" for="game-profile"
+                    >自动应用方案</label
+                  ><select id="game-profile"></select>
+                </div>
+                <div>
+                  <label class="field-label" for="poll-seconds"
+                    >检测间隔（秒）</label
+                  ><input
+                    id="poll-seconds"
+                    type="number"
+                    min="2"
+                    max="30"
+                    value="3"
+                  />
+                </div>
+              </div>
+              <p class="field-help">
+                游戏退出后恢复；手动恢复会暂停当前游戏会话的自动应用。手动模式不检测进程。
+              </p>
+            </section>
+            <section class="settings-card shortcuts">
+              <h2>快捷键与本机数据</h2>
+              <div><span>手动开关滤镜</span><kbd>Ctrl + Shift + F10</kbd></div>
+              <div><span>恢复原始色彩</span><kbd>Ctrl + Shift + F11</kbd></div>
+              <p class="field-help">
+                设置与恢复备份：%LOCALAPPDATA%\DeltaForceFilterManager<br />Windows
+                x64 · SDR · WebView2 · 本地处理，无后台网络请求
+              </p>
+            </section>
+            <div class="settings-save">
+              <span id="settings-message" role="status"></span
+              ><button type="submit" class="primary-button">保存设置</button
+              ><button id="quit" type="button" class="outline-button">
+                退出程序
+              </button>
+            </div>
+          </form>
+        </main>
+        <footer class="footer">
+          <span><span class="small-dot"></span> SDR 工作空间</span
+          ><span id="footer-status">调整只在点击应用后写入显示器</span
+          ><button id="refresh" class="quiet-button">刷新设备</button>
+        </footer>
+      </div>
+    </div>
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <h2 id="dialog-title"></h2>
+        <p id="dialog-message"></p>
+        <div id="dialog-choices"></div>
+      </form>
+    </dialog>
+    <dialog id="process-dialog">
+      <h2>选择运行中的进程</h2>
+      <label for="process-search" class="sr-only">搜索进程</label
+      ><input id="process-search" placeholder="搜索 .exe 文件名" />
+      <div id="process-list"></div>
+      <form method="dialog"><button class="outline-button">关闭</button></form>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
