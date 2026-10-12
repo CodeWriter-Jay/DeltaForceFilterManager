@@ -5,6 +5,15 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a preview release after verification
+        type: boolean
+        default: false
+      release_tag:
+        description: Release tag (vMAJOR.MINOR.PATCH)
+        type: string
+        default: v0.1.0
 
 permissions:
   contents: read
@@ -50,3 +59,38 @@ jobs:
           name: smoke-diagnostics
           path: smoke-error.txt
           if-no-files-found: ignore
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeltaForceFilterManager-win-x64
+          path: artifacts
+      - name: Package and publish verified preview
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release tag.' }
+          Copy-Item README.md, LICENSE artifacts/portable/
+          $package = "DeltaForceFilterManager-$($env:RELEASE_TAG)-win-x64.zip"
+          Compress-Archive -Path artifacts/portable/* -DestinationPath $package
+          @'
+          Windows x64 预览版：原生暗色 GUI、ICC / NVIDIA 色彩调节、暗部提升与高光压缩、本地参考图片与分屏对照、游戏进程联动、开机启动、托盘及原始色彩恢复。
+
+          下载 win-x64.zip，解压后运行 DeltaForceFilterManager.exe。自包含版本，无需另装 .NET。
+
+          已通过 34 项核心测试、Windows 构建和参考图片/GUI 冒烟验证。截图和 CI 空闲资源报告同时提供。真实显示器效果、NVIDIA 驱动、游戏全屏兼容性及游戏电脑后台占用仍需实机验证。本版支持 Windows 10/11 x64、SDR。首次请在游戏运行时选择实际进程名，详见包内 README。
+          '@ | Set-Content release-notes.md -Encoding utf8
+          gh release create $env:RELEASE_TAG $package artifacts/ui.png artifacts/ui.settings.png artifacts/ui.compact.png artifacts/ui.report.json --target $env:RELEASE_SHA --title "DeltaForce Filter $($env:RELEASE_TAG) 预览版" --notes-file release-notes.md --prerelease
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
