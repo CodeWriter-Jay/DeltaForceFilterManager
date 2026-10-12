@@ -511,7 +511,7 @@ internal sealed class MainForm : Form
         File.Copy(draft.IccPath, dialog.FileName, overwrite: true); SetInfo("ICC 已导出。");
     }
 
-    private void ApplyDraft() => Run(() => { Apply(draft); autoOwned = false; watcher.SuppressCurrentGame(); });
+    private void ApplyDraft() => Run(() => { Apply(draft); watcher.SuppressCurrentGame(); });
     private void Apply(FilterProfile profile)
     {
         if (recoveryPending) throw new InvalidOperationException("上次备份尚未恢复，请先点击恢复原始色彩。");
@@ -658,9 +658,11 @@ internal sealed class MainForm : Form
         process.Refresh();
         var visibleMemory = process.WorkingSet64;
         HideToTray();
+        // Exclude startup layout, serialization and tiered JIT work from the idle sample.
+        for (var index = 0; index < 50; index++) { Application.DoEvents(); Thread.Sleep(100); }
         var cpu = process.TotalProcessorTime;
         var stopwatch = Stopwatch.StartNew();
-        for (var index = 0; index < 25; index++) { Application.DoEvents(); Thread.Sleep(100); }
+        for (var index = 0; index < 50; index++) { Application.DoEvents(); Thread.Sleep(100); }
         process.Refresh();
         Storage.Write(Path.ChangeExtension(output, "report.json"), new
         {
@@ -669,6 +671,7 @@ internal sealed class MainForm : Form
             DeviceDpi,
             VisibleWorkingSetMiB = visibleMemory / 1048576.0,
             TrayWorkingSetMiB = process.WorkingSet64 / 1048576.0,
+            IdleWarmupSeconds = 5,
             IdleSampleSeconds = stopwatch.Elapsed.TotalSeconds,
             IdleCpuSeconds = (process.TotalProcessorTime - cpu).TotalSeconds,
             ProcessPollingEnabled = processTimer.Enabled,
@@ -679,8 +682,9 @@ internal sealed class MainForm : Form
     private void CaptureWindowImage(string output)
     {
         PerformLayout(); Invalidate(invalidateChildren: true); Refresh(); Application.DoEvents();
-        using var bitmap = new Bitmap(Width, Height);
-        DrawToBitmap(bitmap, new(0, 0, bitmap.Width, bitmap.Height));
+        var content = Controls[0];
+        using var bitmap = new Bitmap(content.Width, content.Height);
+        content.DrawToBitmap(bitmap, new(0, 0, bitmap.Width, bitmap.Height));
         bitmap.Save(output);
     }
     private void DisposeResources()
