@@ -108,6 +108,7 @@ impl Session {
                 snapshot.applied_icc_profiles.push(name);
             }
         }
+        snapshot.validate()?;
         let ramp = tone::build(&p.color, icc.as_deref().unwrap_or(&snapshot.gamma_ramp))?;
         self.recovery.save(&snapshot)?;
         self.snapshot = Some(snapshot.clone());

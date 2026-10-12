@@ -7,7 +7,7 @@ use filter_core::{
     models::{Profile, Settings},
     storage, Result,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -52,13 +52,8 @@ fn bootstrap(shared: tauri::State<'_, Arc<Shared>>) -> Result<View> {
     Ok(lock(&shared)?.view())
 }
 #[tauri::command]
-async fn mutate(
-    app: tauri::AppHandle,
-    shared: tauri::State<'_, Arc<Shared>>,
-    request: Request,
-) -> Result<View> {
+async fn mutate(shared: tauri::State<'_, Arc<Shared>>, request: Request) -> Result<View> {
     let shared = shared.inner().clone();
-    app.emit("operation-start", ()).map_err(|e| e.to_string())?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut c = lock(&shared)?;
         c.error = None;
@@ -83,7 +78,6 @@ async fn mutate(
     })
     .await
     .map_err(|e| e.to_string())?;
-    app.emit("operation-end", ()).map_err(|e| e.to_string())?;
     result
 }
 #[tauri::command]
@@ -142,13 +136,17 @@ async fn reference_image(
     .await
     .map_err(|e| e.to_string())?
 }
+#[derive(Serialize)]
+struct FileOutcome {
+    profile: Option<Profile>,
+}
 #[tauri::command]
 async fn file_action(
     app: tauri::AppHandle,
     shared: tauri::State<'_, Arc<Shared>>,
     kind: String,
     profile: Option<Profile>,
-) -> Result<Option<Profile>> {
+) -> Result<Option<FileOutcome>> {
     let shared = shared.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (filter, extensions) = if kind.contains("icc") {
@@ -174,13 +172,13 @@ async fn file_action(
                 p.id = uuid_id();
                 p.icc_path = None;
                 lock(&shared)?.save_profile(p.clone())?;
-                Ok(Some(p))
+                Ok(Some(FileOutcome { profile: Some(p) }))
             }
             "export-profile" => {
                 let p = profile.ok_or("缺少方案")?;
                 p.validate()?;
                 storage::write(&path, &p)?;
-                Ok(None)
+                Ok(Some(FileOutcome { profile: None }))
             }
             "import-icc" => {
                 icc::read(&path)?;
@@ -206,7 +204,9 @@ async fn file_action(
                 let mut c = lock(&shared)?;
                 c.refresh()?;
                 c.draft.icc_path = Some(dest.to_string_lossy().into());
-                Ok(Some(c.draft.clone()))
+                Ok(Some(FileOutcome {
+                    profile: Some(c.draft.clone()),
+                }))
             }
             "export-icc" => {
                 let p = profile.ok_or("缺少方案")?;
@@ -217,7 +217,7 @@ async fn file_action(
                     storage::read_bytes(Path::new(&source), icc::MAX_BYTES)?,
                 )
                 .map_err(|e| e.to_string())?;
-                Ok(None)
+                Ok(Some(FileOutcome { profile: None }))
             }
             _ => Err("未知文件操作".into()),
         }
@@ -454,7 +454,9 @@ fn main() {
                 match controller.restore(false) {
                     Ok(()) => app.handle().exit(0),
                     Err(e) => {
-                        eprintln!("恢复失败：{e}");
+                        filter_core::platform::error_dialog(&format!(
+                            "恢复失败：{e}。原始备份已保留。"
+                        ));
                         app.handle().exit(1)
                     }
                 }
@@ -529,7 +531,13 @@ fn main() {
                     }
                 }
                 let seconds = c.settings.poll_seconds;
-                let changed = match c.poll() {
+                let mut operation_started = false;
+                let changed = match c.poll(|| {
+                    operation_started = true;
+                    if let Err(e) = handle.emit("operation-start", ()) {
+                        eprintln!("自动应用通知失败：{e}");
+                    }
+                }) {
                     Ok(v) => v,
                     Err(e) => {
                         let changed = c.error.as_ref() != Some(&e);
@@ -540,6 +548,11 @@ fn main() {
                 if changed {
                     if let Err(e) = handle.emit("state", c.view()) {
                         eprintln!("进程状态通知失败：{e}");
+                    }
+                }
+                if operation_started {
+                    if let Err(e) = handle.emit("operation-end", ()) {
+                        eprintln!("自动应用通知失败：{e}");
                     }
                 }
                 if let Err(e) = worker.wake.wait_timeout(c, Duration::from_secs(seconds)) {

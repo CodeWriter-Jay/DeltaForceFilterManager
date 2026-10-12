@@ -20,6 +20,8 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 let view: View;
 let draft: Profile;
 let busy = false;
+let localBusy = false;
+let externalOperations = 0;
 let image: ImageData;
 let lut: number[] = [];
 let previewRevision = 0;
@@ -60,6 +62,15 @@ function dirty(): boolean {
   return JSON.stringify(draft) !== JSON.stringify(savedProfile());
 }
 function setBusy(value: boolean) {
+  localBusy = value;
+  renderBusy();
+}
+function externalBusy(started: boolean) {
+  externalOperations = Math.max(0, externalOperations + (started ? 1 : -1));
+  renderBusy();
+}
+function renderBusy() {
+  const value = localBusy || externalOperations > 0;
   busy = value;
   renderStatus();
   document
@@ -631,13 +642,17 @@ async function fileAction(kind: string) {
   }
   setBusy(true);
   try {
-    const result = await invoke<Profile | null>("file_action", {
-      kind,
-      profile: clone(draft),
-    });
+    const result = await invoke<{ profile: Profile | null } | null>(
+      "file_action",
+      {
+        kind,
+        profile: clone(draft),
+      },
+    );
+    if (!result) return;
     const next = await invoke<View>("bootstrap");
     setView(next, kind.startsWith("export"));
-    if (result) draft = clone(result);
+    if (result.profile) draft = clone(result.profile);
     syncParameters();
     schedulePreview();
     if (kind.startsWith("export")) toast("已导出到选择的文件");
@@ -946,8 +961,8 @@ async function start() {
     };
     if (native) {
       await listen<View>("state", (e) => setView(e.payload, true));
-      await listen("operation-start", () => setBusy(true));
-      await listen("operation-end", () => setBusy(false));
+      await listen("operation-start", () => externalBusy(true));
+      await listen("operation-end", () => externalBusy(false));
       await listen("request-close", () => void close());
       await getCurrentWindow().onDragDropEvent(async (e) => {
         if (e.payload.type === "over") $("#drop-hint").hidden = false;

@@ -248,8 +248,12 @@ impl Controller {
             self.watcher = Watcher::default();
             self.game_running = false;
         }
+        let monitor_changed = self.settings.monitor_id != settings.monitor_id;
         self.startup_actual = settings.start_with_windows;
         self.settings = settings;
+        if monitor_changed {
+            self.refresh()?;
+        }
         Ok(())
     }
     pub fn apply(&mut self, p: Profile) -> Result<()> {
@@ -329,7 +333,7 @@ impl Controller {
         self.draft = self.settings.selected().clone();
         Ok(())
     }
-    pub fn poll(&mut self) -> Result<bool> {
+    pub fn poll(&mut self, on_start: impl FnOnce()) -> Result<bool> {
         if !self.settings.follow_game
             || self.blocked
             || self.session.snapshot.is_some()
@@ -352,6 +356,7 @@ impl Controller {
         self.game_running = running;
         match self.watcher.observe(running) {
             Transition::Started => {
+                on_start();
                 let p = self.settings.game_profile().clone();
                 self.apply(p)?;
                 self.auto_owned = true;
@@ -359,6 +364,7 @@ impl Controller {
             }
             Transition::Exited => {
                 if self.auto_owned {
+                    on_start();
                     self.restore(false)?;
                 }
                 Ok(true)
