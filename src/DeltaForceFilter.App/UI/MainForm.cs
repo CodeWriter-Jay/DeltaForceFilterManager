@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using DeltaForceFilter.App.Platform;
 using DeltaForceFilter.Core;
 
@@ -40,6 +41,8 @@ internal sealed class MainForm : Form
     private bool autoOwned;
     private bool suspendedPreview;
     private bool recoveryPending;
+    private int watcherGeneration;
+    private Action? refreshGameProfiles;
 
     internal MainForm(AppSettings settings, string configPath, WindowsDisplayBackend backend, FilterSession session, bool startInTray, bool smoke)
     {
@@ -75,6 +78,7 @@ internal sealed class MainForm : Form
         processTimer.Tick += async (_, _) => await CheckGame();
         FormClosing += HandleFormClosing;
         FormClosed += (_, _) => DisposeResources();
+        Resize += (_, _) => { if (!smoke && IsHandleCreated && WindowState == FormWindowState.Minimized) HideToTray(); };
         Shown += async (_, _) =>
         {
             if (smoke) return;
@@ -275,6 +279,7 @@ internal sealed class MainForm : Form
             gameProfile.DataSource = settings.Profiles.ToList();
             gameProfile.SelectedItem = settings.GameProfile;
         }
+        refreshGameProfiles = PopulateGameProfiles;
         PopulateGameProfiles();
         AddRow(stack, Theme.Label("自动应用方案", 9, Theme.Muted)); AddRow(stack, gameProfile);
         var processes = Theme.TextBox(string.Join(Environment.NewLine, settings.GameProcesses));
@@ -530,6 +535,7 @@ internal sealed class MainForm : Form
 
     private void ConfigureWatcher()
     {
+        watcherGeneration++;
         processTimer.Stop(); watcher.Reset(); processTimer.Interval = settings.PollSeconds * 1000;
         if (settings.FollowGame && !smoke) processTimer.Start();
     }
@@ -537,6 +543,7 @@ internal sealed class MainForm : Form
     {
         if (busy || !settings.FollowGame || recoveryPending) return;
         busy = true;
+        var generation = watcherGeneration;
         var names = settings.GameProcesses.ToList();
         try
         {
@@ -545,7 +552,7 @@ internal sealed class MainForm : Form
                 var processes = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(name));
                 try { return processes.Length > 0; } finally { foreach (var process in processes) process.Dispose(); }
             }));
-            if (IsDisposed || quitting || !settings.FollowGame) return;
+            if (IsDisposed || quitting || !settings.FollowGame || generation != watcherGeneration) return;
             var transition = watcher.Observe(present);
             if (transition == GameTransition.Started)
             {
@@ -561,7 +568,11 @@ internal sealed class MainForm : Form
     private void SaveSettings(AppSettings next) { next.Validate(); Storage.Write(configPath, next); settings = next; }
     private bool ConfirmDiscard() => settings.Profiles.FirstOrDefault(p => p.Id == draft.Id) == draft ||
         MessageBox.Show(this, "当前方案有未保存的调节。切换后放弃这些调节？", "未保存的调节", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
-    private void ShowPage(bool showSettings) { settingsPage.Visible = showSettings; tuningPage.Visible = !showSettings; }
+    private void ShowPage(bool showSettings)
+    {
+        if (showSettings) refreshGameProfiles?.Invoke();
+        settingsPage.Visible = showSettings; tuningPage.Visible = !showSettings;
+    }
 
     private void UpdateStatus()
     {
@@ -625,6 +636,53 @@ internal sealed class MainForm : Form
         quitting = true;
     }
     internal void CloseForSmokeTest() { quitting = true; Close(); }
+
+    internal void CaptureSmokeTest(string output)
+    {
+        if (Marshal.SizeOf<NativeMethods.DisplayDevice>() != 840 ||
+            Marshal.SizeOf<NativeMethods.DisplayPath>() != 72 ||
+            Marshal.SizeOf<NativeMethods.SourceName>() != 84 ||
+            Marshal.SizeOf<NativeMethods.AdvancedColor>() != 32)
+            throw new InvalidOperationException("Win32 显示 API 结构布局无效。");
+        preview.VerifyImagePipeline();
+        UpdatePreview();
+        // DrawToBitmap does not need the entire window to fit the CI virtual desktop.
+        ClientSize = new(1360, 900);
+        CaptureWindowImage(output);
+        ShowPage(true);
+        CaptureWindowImage(Path.ChangeExtension(output, "settings.png"));
+        ShowPage(false);
+        ClientSize = new(1140, 780);
+        CaptureWindowImage(Path.ChangeExtension(output, "compact.png"));
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        var visibleMemory = process.WorkingSet64;
+        HideToTray();
+        var cpu = process.TotalProcessorTime;
+        var stopwatch = Stopwatch.StartNew();
+        for (var index = 0; index < 25; index++) { Application.DoEvents(); Thread.Sleep(100); }
+        process.Refresh();
+        Storage.Write(Path.ChangeExtension(output, "report.json"), new
+        {
+            ImageImportAndGammaPreview = "passed",
+            Win32StructureLayout = "passed",
+            DeviceDpi,
+            VisibleWorkingSetMiB = visibleMemory / 1048576.0,
+            TrayWorkingSetMiB = process.WorkingSet64 / 1048576.0,
+            IdleSampleSeconds = stopwatch.Elapsed.TotalSeconds,
+            IdleCpuSeconds = (process.TotalProcessorTime - cpu).TotalSeconds,
+            ProcessPollingEnabled = processTimer.Enabled,
+            Environment = "GitHub Actions Windows runner, manual mode; not a game PC benchmark"
+        });
+    }
+
+    private void CaptureWindowImage(string output)
+    {
+        PerformLayout(); Invalidate(invalidateChildren: true); Refresh(); Application.DoEvents();
+        using var bitmap = new Bitmap(Width, Height);
+        DrawToBitmap(bitmap, new(0, 0, bitmap.Width, bitmap.Height));
+        bitmap.Save(output);
+    }
     private void DisposeResources()
     {
         processTimer.Stop(); processTimer.Dispose(); previewTimer.Dispose();

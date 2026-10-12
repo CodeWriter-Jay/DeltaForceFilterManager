@@ -40,18 +40,33 @@ internal static class Theme
         return button;
     }
 
-    internal static ComboBox Combo() => new()
+    internal static ComboBox Combo()
     {
-        DropDownStyle = ComboBoxStyle.DropDownList,
-        FlatStyle = FlatStyle.Flat,
-        BackColor = Raised,
-        ForeColor = Text,
-        Font = Font(9.5f),
-        Dock = DockStyle.Top,
-        IntegralHeight = false,
-        DropDownHeight = 280,
-        Margin = new(0, 0, 0, 12)
-    };
+        var combo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 24,
+            BackColor = Raised,
+            ForeColor = Text,
+            Font = Font(9.5f),
+            Dock = DockStyle.Top,
+            IntegralHeight = false,
+            DropDownHeight = 280,
+            Margin = new(0, 0, 0, 12)
+        };
+        combo.DrawItem += (_, e) =>
+        {
+            using var brush = new SolidBrush((e.State & DrawItemState.Selected) != 0 ? Border : Raised);
+            e.Graphics.FillRectangle(brush, e.Bounds);
+            var label = e.Index < 0 ? "" : combo.GetItemText(combo.Items[e.Index]);
+            var bounds = new Rectangle(e.Bounds.X + 8, e.Bounds.Y, Math.Max(1, e.Bounds.Width - 12), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, label, combo.Font, bounds, Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            e.DrawFocusRectangle();
+        };
+        return combo;
+    }
 
     internal static CheckBox Check(string text, bool value) => new()
     {

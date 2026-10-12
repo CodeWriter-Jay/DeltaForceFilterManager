@@ -28,6 +28,8 @@ internal sealed class ImagePreview : Control
 
     internal void LoadImage(string path)
     {
+        if (!new[] { ".png", ".jpg", ".jpeg", ".bmp" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
+            throw new InvalidDataException("请选择 PNG、JPEG 或 BMP 参考图片。");
         if (new FileInfo(path).Length > 25 * 1024 * 1024) throw new InvalidDataException("参考图片最大为 25 MB。");
         using var source = Image.FromFile(path, useEmbeddedColorManagement: false);
         if ((long)source.Width * source.Height > 32_000_000) throw new InvalidDataException("图片最多 3200 万像素。");
@@ -62,6 +64,32 @@ internal sealed class ImagePreview : Control
         original.Dispose(); adjusted.Dispose();
         original = new Bitmap(1, 1, PixelFormat.Format32bppArgb);
         adjusted = new Bitmap(1, 1, PixelFormat.Format32bppArgb);
+    }
+
+    internal void VerifyImagePipeline()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"filter-image-test-{Guid.NewGuid():N}.png");
+        try
+        {
+            using (var image = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
+            {
+                using var graphics = Graphics.FromImage(image);
+                graphics.Clear(Color.FromArgb(64, 128, 192));
+                image.Save(path, ImageFormat.Png);
+            }
+            LoadImage(path);
+            // File deletion verifies that importing does not leave the source locked.
+            File.Delete(path);
+            SetRamp(ToneCurve.Identity());
+            if (adjusted.GetPixel(16, 16).ToArgb() != Color.FromArgb(64, 128, 192).ToArgb())
+                throw new InvalidOperationException("参考图片导入或中性预览验证失败。");
+            SetRamp(ToneCurve.Build(new() { Gamma = 1.2 }));
+            var pixel = adjusted.GetPixel(16, 16);
+            if (pixel.R <= 64 || pixel.G <= 128 || pixel.B <= 192)
+                throw new InvalidOperationException("参考图片 Gamma 预览验证失败。");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+        ResetImage();
     }
 
     internal unsafe void SetRamp(ushort[] ramp)

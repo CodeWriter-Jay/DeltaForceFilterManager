@@ -47,12 +47,8 @@ internal static class Program
                 var output = args.SkipWhile(a => a != "--ui-smoke-test").Skip(1).FirstOrDefault()
                     ?? Path.Combine(Environment.CurrentDirectory, "artifacts", "ui.png");
                 form.Show();
-                form.Refresh();
-                Application.DoEvents();
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
-                using var bitmap = new Bitmap(form.Width, form.Height);
-                form.DrawToBitmap(bitmap, new(0, 0, bitmap.Width, bitmap.Height));
-                bitmap.Save(output);
+                form.CaptureSmokeTest(output);
                 form.CloseForSmokeTest();
                 return 0;
             }

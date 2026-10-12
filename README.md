@@ -69,7 +69,7 @@ dotnet publish src/DeltaForceFilter.App -c Release -r win-x64 --self-contained t
 
 macOS/Linux 可运行核心测试、交叉编译 Windows 应用；不能执行 Windows GUI 或硬件接口。自包含包包含 .NET Desktop Runtime，发布包大小与后台工作集是不同指标；尚未在真实游戏电脑测量 CPU、内存或帧率变化，不承诺固定占用。
 
-GitHub Actions 自动运行核心测试、Windows 构建、自包含发布和原生 GUI 截图冒烟测试，上传 `DeltaForceFilterManager-win-x64` artifact。GUI 测试使用临时配置，不应用滤镜、不写自启注册表。硬件色彩效果、ICC 安装权限、真实 NVIDIA 驱动、游戏进程联动和实际占用需在目标 Windows PC 上验证。
+GitHub Actions 自动运行核心测试、Windows 构建、自包含发布和原生 GUI 冒烟测试，上传 `DeltaForceFilterManager-win-x64` artifact。GUI 测试验证 Win32 结构布局、参考图片导入及 Gamma 预览、源图片无锁定，生成工作台/设置/紧凑窗口截图和手动模式短时空闲资源采样。使用临时配置，不应用滤镜、不写自启注册表。CI 采样不代表游戏电脑性能；硬件色彩效果、ICC 安装权限、真实 NVIDIA 驱动、游戏进程联动和实际占用需在目标 Windows PC 上验证。
 
 测试覆盖曲线端点与单调性、RGB 与校准叠加、ICC 表/公式和恶意边界、参数验证、原始状态事务、部分失败回滚、恢复文件保留、A/B 和进程状态。
 
