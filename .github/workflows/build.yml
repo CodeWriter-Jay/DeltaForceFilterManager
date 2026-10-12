@@ -1,0 +1,52 @@
+name: Windows build and verification
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Run curve, ICC, recovery and process-state tests
+        run: dotnet run --project tests/DeltaForceFilter.Core.Tests -c Release
+      - name: Build Windows app
+        run: dotnet build src/DeltaForceFilter.App -c Release
+      - name: Publish portable Windows x64 app
+        run: dotnet publish src/DeltaForceFilter.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/portable
+      - name: Render native GUI smoke test
+        shell: pwsh
+        run: |
+          $process = Start-Process artifacts/portable/DeltaForceFilterManager.exe -ArgumentList '--ui-smoke-test', 'artifacts/ui.png' -PassThru
+          if (-not $process.WaitForExit(60000)) {
+            $process.Kill()
+            throw 'GUI smoke test timed out.'
+          }
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path smoke-error.txt) { Get-Content smoke-error.txt }
+            throw "GUI smoke test failed: $($process.ExitCode)"
+          }
+          if (-not (Test-Path artifacts/ui.png)) { throw 'GUI screenshot missing.' }
+      - name: Upload Windows package and GUI preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeltaForceFilterManager-win-x64
+          path: artifacts/
+          retention-days: 30
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-diagnostics
+          path: smoke-error.txt
+          if-no-files-found: ignore
