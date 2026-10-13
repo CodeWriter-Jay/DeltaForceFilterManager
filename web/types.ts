@@ -14,6 +14,7 @@ export interface Profile {
   Name: string;
   IccPath: string | null;
   Color: Color;
+  ProcessNames?: string[];
 }
 export interface Monitor {
   DeviceName: string;
@@ -33,8 +34,10 @@ export interface Settings {
   StartWithWindows: boolean;
   CloseToTray: boolean;
   RestoreOnExit: boolean;
+  LiveAdjust: boolean;
 }
 export interface View {
+  appVersion: string;
   settings: Settings;
   monitors: Monitor[];
   iccProfiles: string[];
@@ -51,11 +54,17 @@ export interface View {
   smoke: boolean;
   supported: boolean;
   startupActual: boolean;
+  liveEnabled: boolean;
+  liveVerifying: boolean;
 }
 export type Request =
   | { type: "Apply" | "SaveProfile"; profile: Profile }
+  | { type: "Live"; profile: Profile }
+  | { type: "SetLive"; enabled: boolean; profile: Profile }
   | { type: "Restore" | "Compare" | "Toggle" | "Refresh" }
   | { type: "Select" | "Delete"; id: string }
+  | { type: "UpdateProfile"; id: string; name: string; processes: string[] }
+  | { type: "Reorder"; ids: string[] }
   | { type: "Settings"; settings: Settings };
 export const neutral: Color = {
   Brightness: 0,
@@ -86,6 +95,7 @@ export function browserView(): View {
     },
   }));
   return {
+    appVersion: "0.2.1",
     settings: {
       SchemaVersion: 1,
       Profiles: profiles,
@@ -101,6 +111,7 @@ export function browserView(): View {
       StartWithWindows: false,
       CloseToTray: true,
       RestoreOnExit: true,
+      LiveAdjust: true,
     },
     monitors: [],
     iccProfiles: [],
@@ -117,7 +128,20 @@ export function browserView(): View {
     smoke: false,
     supported: false,
     startupActual: false,
+    liveEnabled: false,
+    liveVerifying: false,
   };
+}
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  available: boolean;
+  releaseUrl: string;
+  notes: string;
+}
+export interface UpdateProgress {
+  downloaded: number;
+  total: number;
 }
 // Browser-only interface preview. The native client obtains this LUT from Rust, including ICC calibration.
 export function previewLut(c: Color): number[] {

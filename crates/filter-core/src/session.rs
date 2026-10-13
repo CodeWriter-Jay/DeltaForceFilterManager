@@ -9,6 +9,14 @@ pub trait Backend: Send {
     fn capture(&mut self, monitor: &Monitor, require_vibrance: bool) -> Result<Snapshot>;
     /// Set ICC and NVIDIA first. A profile without either component restores its original value.
     fn metadata(&mut self, snapshot: &Snapshot, profile: Option<&Profile>) -> Result<()>;
+    fn live_metadata(
+        &mut self,
+        snapshot: &Snapshot,
+        profile: &Profile,
+        _icc_changed: bool,
+    ) -> Result<()> {
+        self.metadata(snapshot, Some(profile))
+    }
     fn read_ramp(&mut self, monitor: &Monitor) -> Result<Vec<u16>>;
     fn write_ramp(&mut self, monitor: &Monitor, ramp: &[u16]) -> Result<()>;
     fn settle(&mut self, delay: Duration) {
@@ -39,6 +47,8 @@ pub struct Session {
     pub snapshot: Option<Snapshot>,
     pub active: Option<Profile>,
     pub comparing: bool,
+    calibration: Option<Vec<u16>>,
+    live_ramp: Option<Vec<u16>>,
 }
 impl Session {
     pub fn new(backend: Box<dyn Backend>, recovery: Box<dyn Recovery>) -> Self {
@@ -48,6 +58,8 @@ impl Session {
             snapshot: None,
             active: None,
             comparing: false,
+            calibration: None,
+            live_ramp: None,
         }
     }
     pub fn attach(&mut self, snapshot: Snapshot) -> Result<()> {
@@ -71,8 +83,24 @@ impl Session {
         tone::build(&p.color, &base)
     }
     pub fn apply(&mut self, monitor: &Monitor, p: &Profile) -> Result<()> {
+        self.apply_internal(monitor, p, false)
+    }
+    pub fn apply_live(&mut self, monitor: &Monitor, p: &Profile) -> Result<()> {
+        self.apply_internal(monitor, p, true)
+    }
+    fn apply_internal(&mut self, monitor: &Monitor, p: &Profile, live: bool) -> Result<()> {
         p.validate()?;
+        let icc_changed = self
+            .active
+            .as_ref()
+            .is_none_or(|active| active.icc_path != p.icc_path);
+        let metadata_changed = icc_changed
+            || self
+                .active
+                .as_ref()
+                .is_none_or(|active| active.color.digital_vibrance != p.color.digital_vibrance);
         let icc = match &p.icc_path {
+            Some(_) if live && !icc_changed => self.calibration.clone(),
             Some(path) => Some(icc::read(Path::new(path))?.unwrap_or_else(tone::identity)),
             None => None,
         };
@@ -110,17 +138,37 @@ impl Session {
         }
         snapshot.validate()?;
         let ramp = tone::build(&p.color, icc.as_deref().unwrap_or(&snapshot.gamma_ramp))?;
-        self.recovery.save(&snapshot)?;
+        if !live
+            || self
+                .snapshot
+                .as_ref()
+                .is_none_or(|old| old.applied_icc_profiles != snapshot.applied_icc_profiles)
+        {
+            self.recovery.save(&snapshot)?;
+        }
         self.snapshot = Some(snapshot.clone());
         self.active = None;
         self.comparing = false;
-        let result = self
-            .backend
-            .metadata(&snapshot, Some(p))
-            .and_then(|_| self.stabilize(&snapshot.monitor, &ramp));
+        let metadata = if !live {
+            self.backend.metadata(&snapshot, Some(p))
+        } else if metadata_changed {
+            self.backend.live_metadata(&snapshot, p, icc_changed)
+        } else {
+            Ok(())
+        };
+        let result = metadata.and_then(|_| {
+            if live {
+                self.backend.write_ramp(&snapshot.monitor, &ramp)?;
+                self.verify(&snapshot.monitor, &ramp)
+            } else {
+                self.stabilize(&snapshot.monitor, &ramp)
+            }
+        });
         match result {
             Ok(()) => {
                 self.active = Some(p.clone());
+                self.calibration = icc;
+                self.live_ramp = live.then_some(ramp);
                 Ok(())
             }
             Err(apply_error) => match self.restore() {
@@ -147,6 +195,31 @@ impl Session {
         self.backend.settle(Duration::from_millis(400));
         self.verify(monitor, ramp)
     }
+    pub fn verify_live(&mut self, final_check: bool) -> Result<()> {
+        let (Some(ramp), Some(snapshot)) = (self.live_ramp.clone(), self.snapshot.clone()) else {
+            return Ok(());
+        };
+        let result: Result<()> = (|| {
+            if !tone::matches(&ramp, &self.backend.read_ramp(&snapshot.monitor)?) {
+                if final_check {
+                    return Err("实时调色被驱动或其他程序持续覆盖".into());
+                }
+                self.backend.write_ramp(&snapshot.monitor, &ramp)?;
+                self.verify(&snapshot.monitor, &ramp)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return match self.restore() {
+                Ok(()) => Err(format!("实时调色校验失败，已恢复原始色彩：{error}")),
+                Err(restore) => Err(format!("实时调色校验失败：{error}；恢复未完成：{restore}")),
+            };
+        }
+        if final_check {
+            self.live_ramp = None;
+        }
+        Ok(())
+    }
     fn verify(&mut self, monitor: &Monitor, ramp: &[u16]) -> Result<()> {
         if tone::matches(ramp, &self.backend.read_ramp(monitor)?) {
             Ok(())
@@ -155,6 +228,7 @@ impl Session {
         }
     }
     pub fn compare(&mut self) -> Result<()> {
+        self.live_ramp = None;
         let s = self.snapshot.clone().ok_or("尚未启用滤镜")?;
         self.active = None;
         self.comparing = false;
@@ -173,6 +247,8 @@ impl Session {
         }
     }
     pub fn restore(&mut self) -> Result<()> {
+        self.live_ramp = None;
+        self.calibration = None;
         self.active = None;
         self.comparing = false;
         if let Some(s) = self.snapshot.clone() {
@@ -183,9 +259,9 @@ impl Session {
         Ok(())
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Watcher {
-    running: bool,
+    profile_id: Option<String>,
     suppressed: bool,
 }
 #[derive(PartialEq, Debug)]
@@ -196,20 +272,22 @@ pub enum Transition {
 }
 impl Watcher {
     pub fn observe(&mut self, running: bool) -> Transition {
-        if !running {
-            let exited = self.running;
-            self.running = false;
+        self.observe_profile(running.then_some("game"))
+    }
+    pub fn observe_profile(&mut self, profile_id: Option<&str>) -> Transition {
+        let Some(profile_id) = profile_id else {
+            let exited = self.profile_id.take().is_some();
             self.suppressed = false;
             return if exited {
                 Transition::Exited
             } else {
                 Transition::None
             };
-        }
-        if self.running {
+        };
+        if self.profile_id.as_deref() == Some(profile_id) {
             return Transition::None;
         }
-        self.running = true;
+        self.profile_id = Some(profile_id.into());
         if self.suppressed {
             Transition::None
         } else {

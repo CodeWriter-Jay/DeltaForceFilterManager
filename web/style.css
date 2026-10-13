@@ -153,6 +153,53 @@ a {
   gap: 7px;
   max-height: 38vh;
   overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+.sidebar > :not(.profiles) {
+  flex-shrink: 0;
+}
+.profile-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 24px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+}
+.profile-row.selected {
+  border-color: #3c7569;
+  background: #20383c;
+}
+.profile-row.drop-before {
+  border-top-color: #75e7ca;
+}
+.profile-row.drop-after {
+  border-bottom-color: #75e7ca;
+}
+.profile-row.dragging {
+  opacity: 0.5;
+}
+.profile-drag,
+.profile-options {
+  background: transparent;
+  color: #788ca6;
+  padding: 6px 0;
+}
+.profile-drag {
+  cursor: grab;
+  touch-action: none;
+}
+.profile-drag:active {
+  cursor: grabbing;
+}
+.profile-options:hover {
+  color: #75e7ca;
+}
+.profile-order-hint {
+  font-size: 9px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+  color: #687e99;
 }
 .profile-card {
   position: relative;
@@ -161,7 +208,8 @@ a {
   color: #9facbf;
   text-align: left;
   width: 100%;
-  padding: 13px 11px;
+  min-width: 0;
+  padding: 13px 5px;
 }
 .profile-card strong {
   font-size: 12px;
@@ -177,15 +225,14 @@ a {
   color: #687e99;
   margin-top: 7px;
   font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.profile-card.selected {
-  border-color: #3c7569;
-  background: #20383c;
-}
-.profile-card.selected strong {
+.profile-row.selected strong {
   color: #75e7ca;
 }
-.profile-card.selected small {
+.profile-row.selected small {
   color: #80a69e;
 }
 .side-actions {
@@ -591,6 +638,8 @@ summary span {
 }
 select {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 25px 10px 9px;
   border: 1px solid var(--border);
   background: #f8fafc;
@@ -891,6 +940,22 @@ kbd {
   align-items: center;
   gap: 12px;
 }
+.update-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+#update-progress {
+  width: 100%;
+  margin-top: 12px;
+  accent-color: var(--accent);
+}
+#update-notes {
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
 .settings-save > span {
   margin-right: auto;
   color: #349a7c;
@@ -928,6 +993,33 @@ dialog p {
   font-size: 12px;
   line-height: 1.8;
   color: #8794a6;
+}
+#managed-profile-name,
+#profile-processes {
+  width: 100%;
+  border: 1px solid var(--border);
+  padding: 10px;
+  margin-bottom: 16px;
+}
+#profile-processes {
+  resize: vertical;
+  max-height: 200px;
+  line-height: 1.7;
+}
+.profile-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 24px;
+}
+#delete-managed-profile {
+  color: #a43e39;
+  margin-right: auto;
+}
+#profile-message {
+  color: #a43e39;
+  overflow-wrap: anywhere;
 }
 #dialog-choices {
   display: flex;
@@ -1095,6 +1187,36 @@ dialog p {
     transition: none !important;
   }
 }
+@media (max-height: 800px) {
+  .brand {
+    margin-bottom: 16px;
+  }
+  .nav-caption {
+    margin-bottom: 8px;
+  }
+  .nav-item {
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+  .profiles-caption {
+    margin-top: 12px;
+  }
+  .side-actions {
+    padding-top: 8px;
+  }
+  .sidebar-bottom {
+    padding-top: 12px;
+  }
+  .version {
+    padding-top: 10px;
+  }
+}
+@media (max-height: 680px) {
+  .profile-order-hint,
+  .version {
+    display: none;
+  }
+}
 /* Keep the primary action and app status visible while each work pane scrolls. */
 #app {
   height: 100vh;
@@ -1107,21 +1229,26 @@ dialog p {
   overflow: hidden;
 }
 .studio,
-.inspector,
 .settings-page {
   overflow-y: auto;
 }
-.inspector > * {
-  flex-shrink: 0;
+.inspector {
+  min-height: 0;
+  overflow: hidden;
+}
+.inspector-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 .apply-area {
-  position: sticky;
-  bottom: -20px;
+  flex-shrink: 0;
   background: white;
-  padding: 16px 0 20px;
-  margin-bottom: -20px;
-  z-index: 3;
-  box-shadow: 0 -14px 16px white;
+  padding: 16px 0 0;
+  margin-top: 0;
 }
 .footer {
   flex-shrink: 0;

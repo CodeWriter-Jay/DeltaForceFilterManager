@@ -1,0 +1,113 @@
+{
+  "SchemaVersion": 1,
+  "Profiles": [
+    {
+      "Id": "00000000000000000000000000000001",
+      "Name": "\u5747\u8861 \u00B7 \u4E09\u89D2\u6D32",
+      "IccPath": null,
+      "Color": {
+        "Brightness": 0,
+        "Contrast": 0,
+        "Gamma": 1.1,
+        "Shadows": 14,
+        "Highlights": 8,
+        "RedGain": 0,
+        "GreenGain": 0,
+        "BlueGain": 0,
+        "DigitalVibrance": null
+      }
+    },
+    {
+      "Id": "00000000000000000000000000000002",
+      "Name": "\u5BA4\u5185 \u00B7 \u6697\u90E8\u53EF\u89C1",
+      "IccPath": null,
+      "Color": {
+        "Brightness": 0,
+        "Contrast": 0,
+        "Gamma": 1.18,
+        "Shadows": 24,
+        "Highlights": 10,
+        "RedGain": 0,
+        "GreenGain": 0,
+        "BlueGain": 0,
+        "DigitalVibrance": null
+      }
+    },
+    {
+      "Id": "00000000000000000000000000000003",
+      "Name": "\u5BA4\u5916 \u00B7 \u4FDD\u7559\u9AD8\u5149",
+      "IccPath": null,
+      "Color": {
+        "Brightness": 0,
+        "Contrast": 0,
+        "Gamma": 1.04,
+        "Shadows": 8,
+        "Highlights": 24,
+        "RedGain": 0,
+        "GreenGain": 0,
+        "BlueGain": 0,
+        "DigitalVibrance": null
+      }
+    },
+    {
+      "Id": "00000000000000000000000000000004",
+      "Name": "\u4E2D\u6027 \u00B7 \u6821\u51C6\u57FA\u51C6",
+      "IccPath": null,
+      "Color": {
+        "Brightness": 0,
+        "Contrast": 0,
+        "Gamma": 1,
+        "Shadows": 0,
+        "Highlights": 0,
+        "RedGain": 0,
+        "GreenGain": 0,
+        "BlueGain": 0,
+        "DigitalVibrance": null
+      }
+    }
+  ],
+  "SelectedProfileId": "00000000000000000000000000000001",
+  "GameProfileId": "00000000000000000000000000000003",
+  "MonitorId": null,
+  "FollowGame": true,
+  "GameProcesses": [
+    "DeltaForceClient-Win64-Shipping.exe",
+    "DeltaForceClient.exe"
+  ],
+  "PollSeconds": 5,
+  "StartWithWindows": false,
+  "CloseToTray": true,
+  "RestoreOnExit": true,
+  "SelectedProfile": {
+    "Id": "00000000000000000000000000000001",
+    "Name": "\u5747\u8861 \u00B7 \u4E09\u89D2\u6D32",
+    "IccPath": null,
+    "Color": {
+      "Brightness": 0,
+      "Contrast": 0,
+      "Gamma": 1.1,
+      "Shadows": 14,
+      "Highlights": 8,
+      "RedGain": 0,
+      "GreenGain": 0,
+      "BlueGain": 0,
+      "DigitalVibrance": null
+    }
+  },
+  "GameProfile": {
+    "Id": "00000000000000000000000000000003",
+    "Name": "\u5BA4\u5916 \u00B7 \u4FDD\u7559\u9AD8\u5149",
+    "IccPath": null,
+    "Color": {
+      "Brightness": 0,
+      "Contrast": 0,
+      "Gamma": 1.04,
+      "Shadows": 8,
+      "Highlights": 24,
+      "RedGain": 0,
+      "GreenGain": 0,
+      "BlueGain": 0,
+      "DigitalVibrance": null
+    }
+  }
+}

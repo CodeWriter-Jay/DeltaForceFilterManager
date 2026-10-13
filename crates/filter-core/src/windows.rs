@@ -647,6 +647,15 @@ impl Backend for WindowsBackend {
     fn read_ramp(&mut self, m: &Monitor) -> Result<Vec<u16>> {
         read_ramp(&resolve(m)?)
     }
+    fn live_metadata(&mut self, s: &Snapshot, p: &Profile, icc_changed: bool) -> Result<()> {
+        if icc_changed {
+            return self.metadata(s, Some(p));
+        }
+        let monitor = resolve(&s.monitor)?;
+        sdr(&monitor)?;
+        // A vibrance drag must not reinstall/reassociate the unchanged ICC on every frame.
+        Nvidia::new()?.write(&monitor, s.nvidia_vibrance_raw, p.color.digital_vibrance)
+    }
     fn write_ramp(&mut self, m: &Monitor, ramp: &[u16]) -> Result<()> {
         if ramp.len() != 768 {
             return Err("曲线长度无效".into());

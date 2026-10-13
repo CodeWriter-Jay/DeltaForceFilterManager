@@ -12,7 +12,7 @@ on:
       release_tag:
         description: Release tag (vMAJOR.MINOR.PATCH)
         type: string
-        default: v0.2.0
+        default: v0.2.1
 permissions:
   contents: read
 jobs:
@@ -28,6 +28,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
+      - name: Validate app version used by update startup verification
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $rustVersion = [regex]::Match((Get-Content src-tauri/Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($version -ne $tauriVersion -or $version -ne $rustVersion) { throw 'package.json, Tauri and Rust app versions must match for upgrades.' }
       - run: npm run build
       - name: Rust core and controller regression tests
         run: cargo test --workspace --locked
@@ -99,7 +106,7 @@ jobs:
           $checksums | Set-Content SHA256SUMS.txt -Encoding utf8
           $rows = $files | ForEach-Object { "| ``$_`` | $([Math]::Round((Get-Item $_).Length / 1MB, 2)) MiB |" }
           @"
-          全新 HTML 界面，Rust + Tauri 2 后台，使用系统 WebView2。修复方案切换只更新预览、ICC/NVIDIA 后续操作覆盖 Gamma 的时序缺陷；完整参数事务 + 延迟复查 + 有限重试 + 失败恢复。
+          HTML 界面，Rust + Tauri 2 后台，使用系统 WebView2。支持显示器实时调色、方案绑定进程、拖动排序与重命名/删除，并修复 ICC 展开布局。设置中可检查 GitHub 正式版本、校验下载并原地升级；升级前备份方案与恢复显示器，新版本启动失败回滚旧 EXE。
 
           **客户端下载**：安装版选择 win-x64-setup.exe；便携版选择 win-x64-portable.zip，解压运行 DeltaForceFilterManager.exe。单独 EXE 也可直接运行。三种均不捆绑 .NET、Chromium 或完整 WebView2；安装器在缺少 WebView2 时联网安装共享运行时。
 
@@ -111,7 +118,7 @@ jobs:
 
           核心/控制器回归测试、HTML 交互测试、Windows 原生 IPC 模拟验证已通过，附界面和包含 WebView2 子进程的短时空闲采样。模拟测试没有操作真实显示器；NVIDIA 实机、游戏独占全屏和游戏电脑资源表现仍需验证。后续其他程序或系统切换仍可能覆盖 Gamma，请重新应用。
 
-          v0.1.0 的约 47 MB ZIP 包含完整 .NET Desktop Runtime；本版已移除该运行时依赖。旧设置与恢复备份格式兼容。详见包内 README。
+          v0.1.0 的约 47 MB ZIP 包含完整 .NET Desktop Runtime；本版已移除该运行时依赖。v0.1.0/v0.2.0 的方案与恢复备份可沿用；同一用户替换 EXE 后继续读取 %LOCALAPPDATA%\DeltaForceFilterManager\。详见包内 README。
           "@ | Set-Content release-notes.md -Encoding utf8
           gh release create $env:RELEASE_TAG $files SHA256SUMS.txt artifacts/ui/workspace.png artifacts/ui/settings.png artifacts/ui/compact.png artifacts/native/idle.json artifacts/native/smoke.json --target $env:RELEASE_SHA --title "DeltaForce Filter $($env:RELEASE_TAG) · HTML 客户端" --notes-file release-notes.md --latest
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }

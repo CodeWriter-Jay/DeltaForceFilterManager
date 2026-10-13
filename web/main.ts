@@ -10,6 +10,8 @@ import {
   type Profile,
   type Request,
   type View,
+  type UpdateInfo,
+  type UpdateProgress,
 } from "./types";
 const native = isTauri();
 const $ = <T extends HTMLElement>(selector: string): T => {
@@ -27,6 +29,21 @@ let lut: number[] = [];
 let previewRevision = 0;
 let previewTimer: number | undefined;
 let toastTimer: number | undefined;
+let livePending: Profile | null = null;
+let liveFlight: Promise<void> | null = null;
+let liveTimer: number | undefined;
+let updateInfo: UpdateInfo | null = null;
+let updateBusy = false;
+let settingsProfilesSignature = "";
+let managedProfileId: string | null = null;
+let profileDrag: {
+  id: string;
+  pointerId: number;
+  startY: number;
+  targetId: string;
+  before: boolean;
+  moved: boolean;
+} | null = null;
 const clone = <T>(v: T): T => structuredClone(v);
 const fields: [keyof Color, string, number, number, number, string][] = [
   ["Brightness", "亮度", -125, 125, 1, ""],
@@ -61,6 +78,39 @@ function savedProfile(): Profile {
 function dirty(): boolean {
   return JSON.stringify(draft) !== JSON.stringify(savedProfile());
 }
+function processNames(value: string): string[] {
+  return value
+    .split("\n")
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+function validateProcessNames(names: string[]) {
+  if (names.length > 16)
+    throw new Error("最多填写 16 个 .exe 文件名，不要填写路径");
+  const unique = new Set<string>();
+  for (const name of names) {
+    if (
+      !name.trim() ||
+      name !== name.trim() ||
+      Array.from(name).length > 200 ||
+      /[\\/:*?"<>|\x00-\x1f\x7f]/.test(name) ||
+      !name.toLowerCase().endsWith(".exe")
+    )
+      throw new Error("请填写 .exe 进程文件名，不要填写路径");
+    if (unique.has(name.toLowerCase()))
+      throw new Error("进程文件名重复（不区分大小写）");
+    unique.add(name.toLowerCase());
+  }
+}
+function validateMetadata(name: string, processes: string[]) {
+  if (!name.trim() || Array.from(name).length > 80)
+    throw new Error("方案名称不能为空，最多 80 个字符");
+  validateProcessNames(processes);
+}
+function setProcesses(profile: Profile, processes: string[]) {
+  if (processes.length) profile.ProcessNames = clone(processes);
+  else delete profile.ProcessNames;
+}
 function setBusy(value: boolean) {
   localBusy = value;
   renderBusy();
@@ -74,14 +124,17 @@ function renderBusy() {
   busy = value;
   renderStatus();
   document
-    .querySelectorAll<HTMLButtonElement>("#app button")
+    .querySelectorAll<HTMLButtonElement>("#app button,#profile-dialog button")
     .forEach((b) => (b.disabled = value));
   document
     .querySelectorAll<
       HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-    >(".inspector input,.inspector select,#profile-name")
+    >(
+      ".inspector input,.inspector select,#profile-name,#profile-dialog input,#profile-dialog textarea",
+    )
     .forEach((e) => (e.disabled = value));
   if (!value) syncParameters();
+  renderUpdate();
 }
 async function request(request: Request): Promise<View> {
   if (native) return invoke<View>("mutate", { request });
@@ -89,6 +142,10 @@ async function request(request: Request): Promise<View> {
   next.error = null;
   switch (request.type) {
     case "SaveProfile": {
+      validateMetadata(
+        request.profile.Name,
+        request.profile.ProcessNames ?? [],
+      );
       const i = next.settings.Profiles.findIndex(
         (p) => p.Id === request.profile.Id,
       );
@@ -96,6 +153,32 @@ async function request(request: Request): Promise<View> {
       else next.settings.Profiles.push(clone(request.profile));
       next.settings.SelectedProfileId = request.profile.Id;
       next.draft = clone(request.profile);
+      break;
+    }
+    case "UpdateProfile": {
+      validateMetadata(request.name, request.processes);
+      const profile = next.settings.Profiles.find((p) => p.Id === request.id);
+      if (!profile) throw new Error("方案不存在");
+      profile.Name = request.name;
+      setProcesses(profile, request.processes);
+      if (next.draft.Id === request.id) {
+        next.draft.Name = request.name;
+        setProcesses(next.draft, request.processes);
+      }
+      break;
+    }
+    case "Reorder": {
+      if (
+        request.ids.length !== next.settings.Profiles.length ||
+        new Set(request.ids).size !== request.ids.length
+      )
+        throw new Error("排序必须包含所有方案且不能重复");
+      next.settings.SelectedProfileId ??= next.settings.Profiles[0].Id;
+      next.settings.Profiles = request.ids.map((id) => {
+        const profile = next.settings.Profiles.find((p) => p.Id === id);
+        if (!profile) throw new Error("方案不存在");
+        return profile;
+      });
       break;
     }
     case "Select":
@@ -107,6 +190,7 @@ async function request(request: Request): Promise<View> {
       break;
     case "Settings":
       next.settings = clone(request.settings);
+      next.startupActual = request.settings.StartWithWindows;
       break;
     case "Delete":
       if (next.settings.Profiles.length === 1) {
@@ -116,8 +200,16 @@ async function request(request: Request): Promise<View> {
       next.settings.Profiles = next.settings.Profiles.filter(
         (p) => p.Id !== request.id,
       );
-      next.settings.SelectedProfileId = null;
-      next.draft = clone(next.settings.Profiles[0]);
+      if (next.settings.SelectedProfileId === request.id)
+        next.settings.SelectedProfileId = null;
+      if (next.settings.GameProfileId === request.id)
+        next.settings.GameProfileId = null;
+      if (next.draft.Id === request.id)
+        next.draft = clone(
+          next.settings.Profiles.find(
+            (p) => p.Id === next.settings.SelectedProfileId,
+          ) ?? next.settings.Profiles[0],
+        );
       break;
     case "Restore":
       next.activeProfile = null;
@@ -126,6 +218,8 @@ async function request(request: Request): Promise<View> {
     case "Apply":
     case "Toggle":
     case "Compare":
+    case "Live":
+    case "SetLive":
       next.error = "界面预览无法写入显示器，请使用 Windows 客户端";
       break;
     case "Refresh":
@@ -137,10 +231,29 @@ async function act(requestValue: Request, success?: string) {
   if (busy) return;
   setBusy(true);
   try {
+    await stopLive(
+      ["SaveProfile", "Settings", "UpdateProfile", "Reorder"].includes(
+        requestValue.type,
+      ),
+    );
     const next = await request(requestValue);
+    if (
+      requestValue.type === "UpdateProfile" &&
+      !next.error &&
+      requestValue.id === draft.Id
+    ) {
+      draft.Name = requestValue.name;
+      setProcesses(draft, requestValue.processes);
+    }
     setView(
       next,
-      requestValue.type === "Settings" || requestValue.type === "Refresh",
+      !!next.error ||
+        requestValue.type === "Settings" ||
+        requestValue.type === "Refresh" ||
+        requestValue.type === "UpdateProfile" ||
+        requestValue.type === "Reorder" ||
+        requestValue.type === "SetLive" ||
+        (requestValue.type === "Delete" && requestValue.id !== draft.Id),
     );
     if (next.error) showError(next.error);
     else if (success) toast(success);
@@ -157,23 +270,103 @@ function setView(next: View, keepDraft = false) {
   renderDevices();
   syncParameters();
   renderStatus();
-  renderSettings();
+  if ($("#settings-page").hidden || !keepDraft) renderSettings();
+  else renderSettingsProfiles(true);
   schedulePreview();
+  renderDisplayPreview();
+  renderUpdate();
 }
 function renderProfiles() {
+  clearProfileDrag();
   const box = $("#profiles");
   box.replaceChildren();
   for (const p of view.settings.Profiles) {
+    const row = document.createElement("div");
+    row.className = `profile-row ${p.Id === draft.Id ? "selected" : ""}`;
+    row.dataset.profileId = p.Id;
+    const handle = document.createElement("button");
+    handle.className = "profile-drag";
+    handle.textContent = "⋮⋮";
+    handle.setAttribute("aria-label", `排序方案：${p.Name}`);
+    handle.title = "拖动排序，或按 ↑ / ↓ 调整顺序";
+    handle.onkeydown = (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      const index = view.settings.Profiles.findIndex(
+        (profile) => profile.Id === p.Id,
+      );
+      const target =
+        view.settings.Profiles[index + (e.key === "ArrowUp" ? -1 : 1)];
+      if (target) void reorderProfile(p.Id, target.Id, e.key === "ArrowUp");
+    };
+    handle.onpointerdown = (e) => {
+      if (busy || e.button !== 0) return;
+      profileDrag = {
+        id: p.Id,
+        pointerId: e.pointerId,
+        startY: e.clientY,
+        targetId: p.Id,
+        before: true,
+        moved: false,
+      };
+      handle.setPointerCapture(e.pointerId);
+    };
+    handle.onpointermove = (e) => {
+      if (
+        !profileDrag ||
+        profileDrag.pointerId !== e.pointerId ||
+        (!profileDrag.moved && Math.abs(e.clientY - profileDrag.startY) < 4)
+      )
+        return;
+      profileDrag.moved = true;
+      const target = document
+        .elementFromPoint(e.clientX, e.clientY)
+        ?.closest<HTMLElement>(".profile-row");
+      box
+        .querySelectorAll(".drop-before,.drop-after")
+        .forEach((r) => r.classList.remove("drop-before", "drop-after"));
+      row.classList.add("dragging");
+      profileDrag.targetId = target?.dataset.profileId ?? p.Id;
+      if (target && target !== row) {
+        profileDrag.before =
+          e.clientY <
+          target.getBoundingClientRect().top + target.offsetHeight / 2;
+        target.classList.add(profileDrag.before ? "drop-before" : "drop-after");
+      }
+    };
+    handle.onpointerup = (e) => {
+      if (!profileDrag || profileDrag.pointerId !== e.pointerId) return;
+      const { id, targetId, before } = profileDrag;
+      clearProfileDrag();
+      if (id !== targetId) void reorderProfile(id, targetId, before);
+    };
+    handle.onpointercancel = () => clearProfileDrag();
+    handle.onlostpointercapture = () => clearProfileDrag();
     const b = document.createElement("button");
-    b.className = `profile-card ${p.Id === draft.Id ? "selected" : ""}`;
+    b.className = "profile-card";
+    b.setAttribute("aria-label", p.Name);
+    b.title = p.Name;
     b.setAttribute("aria-pressed", String(p.Id === draft.Id));
     const title = document.createElement("strong");
     title.textContent = p.Name;
     const text = document.createElement("small");
     text.textContent = `Gamma ${p.Color.Gamma.toFixed(2)} · 暗部 ${p.Color.Shadows}`;
     b.append(title, text);
+    if (p.ProcessNames?.length) {
+      const binding = document.createElement("small");
+      binding.textContent = `↔ ${p.ProcessNames.join("、")}`;
+      binding.title = p.ProcessNames.join("\n");
+      b.append(binding);
+    }
     b.onclick = () => void switchProfile(p.Id);
-    box.append(b);
+    const manage = document.createElement("button");
+    manage.className = "profile-options";
+    manage.textContent = "···";
+    manage.setAttribute("aria-label", `管理方案：${p.Name}`);
+    manage.title = "重命名、绑定进程、删除";
+    manage.onclick = () => editProfile(p.Id);
+    row.append(handle, b, manage);
+    box.append(row);
   }
   $("#manual-mode").classList.toggle("selected", !view.settings.FollowGame);
   $("#game-mode").classList.toggle("selected", view.settings.FollowGame);
@@ -190,6 +383,55 @@ function renderProfiles() {
       ? "游戏运行中 · 退出后恢复"
       : `等待游戏 · 每 ${view.settings.PollSeconds} 秒检测`
     : "按需开启，后台不检测进程";
+}
+function clearProfileDrag() {
+  profileDrag = null;
+  $("#profiles")
+    .querySelectorAll(".dragging,.drop-before,.drop-after")
+    .forEach((row) =>
+      row.classList.remove("dragging", "drop-before", "drop-after"),
+    );
+}
+async function reorderProfile(id: string, targetId: string, before: boolean) {
+  if (busy) return;
+  const ids = view.settings.Profiles.map((p) => p.Id).filter(
+    (value) => value !== id,
+  );
+  const index = ids.indexOf(targetId);
+  if (index < 0) return;
+  ids.splice(index + (before ? 0 : 1), 0, id);
+  await act({ type: "Reorder", ids }, "方案顺序已保存");
+  $("#profiles")
+    .querySelector<HTMLElement>(`[data-profile-id="${id}"] .profile-drag`)
+    ?.focus();
+}
+function editProfile(id: string) {
+  if (busy) return;
+  const profile = view.settings.Profiles.find((p) => p.Id === id);
+  if (!profile) return;
+  managedProfileId = id;
+  $<HTMLInputElement>("#managed-profile-name").value = profile.Name;
+  $<HTMLTextAreaElement>("#profile-processes").value = (
+    profile.ProcessNames ?? []
+  ).join("\n");
+  $("#profile-message").hidden = true;
+  $<HTMLDialogElement>("#profile-dialog").showModal();
+}
+async function deleteProfile(id: string) {
+  if (busy) return;
+  const profile = view.settings.Profiles.find((p) => p.Id === id);
+  if (!profile) return;
+  if (view.settings.Profiles.length === 1) {
+    showError("至少保留一个方案");
+    return;
+  }
+  if (
+    (await choose("删除方案", `删除“${profile.Name}”？绑定进程也会移除。`, [
+      ["delete", "删除"],
+      ["cancel", "取消"],
+    ])) === "delete"
+  )
+    await act({ type: "Delete", id }, "方案已删除");
 }
 function option(value: string, label: string) {
   const o = document.createElement("option");
@@ -227,17 +469,25 @@ function parameter(field: (typeof fields)[number]) {
   container.className = "parameter";
   container.innerHTML = `<div class="parameter-header"><label for="${key}-range">${label}</label><div class="number-wrap"><input id="${key}-number" aria-label="${label}数值" type="number" min="${min}" max="${max}" step="${step}"><span>${unit}</span></div></div><input id="${key}-range" type="range" min="${min}" max="${max}" step="${step}"><div class="parameter-scale"><span>${min}</span><span>${max}</span></div>`;
   for (const input of container.querySelectorAll<HTMLInputElement>("input")) {
-    input.addEventListener(input.type === "range" ? "input" : "change", () => {
+    const update = (event: Event) => {
       const value = Number(input.value);
-      if (!Number.isFinite(value) || value < min || value > max) {
+      if (
+        !input.value ||
+        !Number.isFinite(value) ||
+        value < min ||
+        value > max
+      ) {
+        if (input.type === "number" && event.type === "input") return;
         input.value = String(draft.Color[key] ?? 50);
         showError(`${label}必须在 ${min}–${max} 之间`);
         return;
       }
       draft.Color[key] = Math.round(value / step) * step;
       syncParameters();
-      onDraft();
-    });
+      onDraft(true);
+    };
+    input.addEventListener("input", update);
+    if (input.type === "number") input.addEventListener("change", update);
   }
   return container;
 }
@@ -247,8 +497,10 @@ function syncParameters() {
       draft.Color[key] ??
       (key === "DigitalVibrance" ? (view.nvidiaPercent ?? 50) : max);
     for (const suffix of ["number", "range"]) {
-      $<HTMLInputElement>(`#${key}-${suffix}`).value =
-        key === "Gamma" ? val.toFixed(2) : String(val);
+      const input = $<HTMLInputElement>(`#${key}-${suffix}`);
+      if (suffix !== "number" || document.activeElement !== input) {
+        input.value = key === "Gamma" ? val.toFixed(2) : String(val);
+      }
       $<HTMLInputElement>(`#${key}-${suffix}`).disabled =
         busy ||
         (key === "DigitalVibrance" &&
@@ -261,6 +513,13 @@ function syncParameters() {
   $<HTMLInputElement>("#use-vibrance").disabled =
     busy || view.nvidiaPercent === null;
   $<HTMLInputElement>("#profile-name").value = draft.Name;
+  $<HTMLInputElement>("#live-adjust").checked = view.liveEnabled;
+  $<HTMLInputElement>("#live-adjust").disabled = busy || !view.supported;
+  $("#live-help").textContent = !view.supported
+    ? "显示器实时调色需要 Windows 客户端。"
+    : view.liveEnabled
+      ? "调整参数会立即作用于显示器；方案需另行保存。"
+      : "实时调色已暂停；开启后跟随参数变化，恢复按钮可还原显示器。";
   $<HTMLSelectElement>("#icc").value = draft.IccPath ?? "";
   $("#draft-state").textContent = dirty() ? "有未保存的调整" : "当前方案已保存";
 }
@@ -272,9 +531,11 @@ function renderStatus() {
       ? "恢复待完成"
       : view.comparing
         ? "原始对照中"
-        : view.activeProfile
-          ? "最近应用已校验"
-          : "待启用";
+        : view.liveVerifying
+          ? "实时调色 · 正在复查"
+          : view.activeProfile
+            ? "最近应用已校验"
+            : "待启用";
   chip.className = `chip ${busy ? "busy" : view.activeProfile ? "active" : ""}`;
   $("#apply").innerHTML =
     `<span>◈</span> ${busy ? "正在校验色彩…" : view.activeProfile ? "应用当前调整" : "开启滤镜"}`;
@@ -282,16 +543,152 @@ function renderStatus() {
     ? `已应用：${view.activeProfile.Name}${view.autoOwned ? " · 游戏退出后恢复" : ""}`
     : view.comparing
       ? "正在显示原始色彩，点击开启可返回方案"
-      : "调整只在点击应用后写入显示器";
+      : view.liveEnabled
+        ? "调整参数会实时写入显示器"
+        : "调整只在点击应用后写入显示器";
   const error = $("#error");
   error.hidden = !view.error;
   if (view.error) error.textContent = view.error;
 }
-function onDraft() {
+function onDraft(colorChanged = false) {
   $("#draft-state").textContent = dirty() ? "有未保存的调整" : "当前方案已保存";
   schedulePreview();
   if (native)
     void invoke("remember_draft", { profile: clone(draft) }).catch(showError);
+  if (colorChanged && view.liveEnabled && !busy) {
+    livePending = clone(draft);
+    if (liveTimer === undefined && !liveFlight) {
+      liveTimer = window.setTimeout(() => {
+        liveTimer = undefined;
+        void flushLive();
+      }, 50);
+    }
+  }
+}
+async function flushLive() {
+  if (liveFlight || busy || !livePending || !view.liveEnabled) return;
+  const profile = livePending;
+  livePending = null;
+  liveFlight = (async () => {
+    try {
+      const next = await request({ type: "Live", profile });
+      setView(next, true);
+      if (next.error) {
+        livePending = null;
+        showError(next.error);
+      }
+    } catch (error) {
+      livePending = null;
+      showError(error);
+    }
+  })();
+  await liveFlight;
+  liveFlight = null;
+  if (livePending) void flushLive();
+}
+async function stopLive(flush = false) {
+  clearTimeout(liveTimer);
+  liveTimer = undefined;
+  const pending = livePending;
+  livePending = null;
+  await liveFlight;
+  if (flush && pending && view.liveEnabled) {
+    const next = await request({ type: "Live", profile: pending });
+    setView(next, true);
+    if (next.error) throw new Error(next.error);
+  }
+}
+function renderDisplayPreview() {
+  const actualDisplay = native && (view.liveEnabled || !!view.activeProfile);
+  $("#adjusted").hidden = actualDisplay;
+  $("#divider").hidden = actualDisplay;
+  $(".adjusted-label").hidden = actualDisplay;
+  $(".split-control").hidden = actualDisplay;
+  $(".original-label").textContent = actualDisplay ? "显示器实际效果" : "原始";
+  $(".tip p").textContent = actualDisplay
+    ? "直接观察显示器上的游戏与参考图。参考图不额外叠加滤镜，避免重复调色；点击保存方案保留参数。"
+    : "先调 Gamma 与暗部，再看天空高光。参考图片只预览 RGB 曲线；数字振动请在显示器上对照。";
+}
+function renderUpdate() {
+  $("#current-version").textContent = view.appVersion;
+  $<HTMLButtonElement>("#check-update").disabled = busy || updateBusy;
+  $<HTMLButtonElement>("#install-update").disabled = busy || updateBusy;
+  $("#install-update").hidden = !updateInfo?.available;
+}
+async function checkUpdate() {
+  if (busy || updateBusy) return;
+  const status = $("#update-status");
+  if (!native) {
+    status.textContent = "请在 Windows 客户端中检查更新。";
+    return;
+  }
+  updateBusy = true;
+  updateInfo = null;
+  $("#update-notes").hidden = true;
+  $("#update-progress").hidden = true;
+  status.textContent = "正在检查 GitHub 最新正式版本…";
+  renderUpdate();
+  try {
+    updateInfo = await invoke<UpdateInfo>("check_update");
+    status.textContent = updateInfo.available
+      ? `发现新版本 ${updateInfo.latestVersion}，可以下载并重启升级。`
+      : `当前 ${updateInfo.currentVersion}，最新正式版 ${updateInfo.latestVersion}，无需更新。`;
+    $("#update-notes").textContent = updateInfo.notes;
+    $("#update-notes").hidden = !updateInfo.notes;
+  } catch (error) {
+    status.textContent = `检查更新失败：${String(error)}`;
+  } finally {
+    updateBusy = false;
+    renderUpdate();
+  }
+}
+async function installUpdate() {
+  if (busy || updateBusy || !updateInfo?.available) return;
+  if (dirty()) {
+    const choice = await choose(
+      "升级前保存方案",
+      "当前有未保存的参数。升级会恢复原始色彩并重启程序。",
+      [
+        ["save", "保存并升级"],
+        ["discard", "放弃调整并升级"],
+        ["cancel", "取消"],
+      ],
+    );
+    if (choice === "save") {
+      await act({ type: "SaveProfile", profile: clone(draft) });
+      if (view.error) return;
+    } else if (choice !== "discard") return;
+  } else if (
+    (await choose(
+      "下载并重启升级",
+      `升级到 ${updateInfo.latestVersion}？方案会沿用，升级前自动备份并恢复原始色彩。`,
+      [
+        ["install", "开始升级"],
+        ["cancel", "取消"],
+      ],
+    )) !== "install"
+  )
+    return;
+  updateBusy = true;
+  setBusy(true);
+  $("#update-progress").hidden = false;
+  $<HTMLProgressElement>("#update-progress").value = 0;
+  $("#update-status").textContent = "正在下载并校验更新…";
+  try {
+    await stopLive();
+    await invoke("install_update");
+    $("#update-status").textContent = "更新已准备完成，正在重启…";
+  } catch (error) {
+    try {
+      setView(await invoke<View>("bootstrap"), true);
+    } catch (refreshError) {
+      showError(refreshError);
+    }
+    $("#update-status").textContent = `升级失败：${String(error)}`;
+  } finally {
+    updateBusy = false;
+    setBusy(false);
+  }
 }
 async function choose(
   title: string,
@@ -349,11 +746,24 @@ function renderSettings() {
   $<HTMLInputElement>("#poll-seconds").value = String(
     view.settings.PollSeconds,
   );
+  renderSettingsProfiles(false);
+}
+function renderSettingsProfiles(preserve: boolean) {
+  const signature = JSON.stringify(
+    view.settings.Profiles.map((profile) => [profile.Id, profile.Name]),
+  );
+  if (preserve && signature === settingsProfilesSignature) return;
   const select = $<HTMLSelectElement>("#game-profile");
+  const previous = select.value;
   select.replaceChildren(
     ...view.settings.Profiles.map((p) => option(p.Id, p.Name)),
   );
-  select.value = view.settings.GameProfileId ?? draft.Id;
+  select.value =
+    preserve &&
+    view.settings.Profiles.some((profile) => profile.Id === previous)
+      ? previous
+      : (view.settings.GameProfileId ?? draft.Id);
+  settingsProfilesSignature = signature;
 }
 function page(settings: boolean) {
   $("#work-page").hidden = settings;
@@ -377,7 +787,7 @@ async function updatePreview(revision: number) {
     if (revision !== previewRevision) return;
     lut = next;
     drawCurve();
-    drawAdjusted();
+    if (!$("#adjusted").hidden) drawAdjusted();
   } catch (e) {
     showError(e);
   }
@@ -642,6 +1052,7 @@ async function fileAction(kind: string) {
   }
   setBusy(true);
   try {
+    await stopLive(kind.startsWith("export"));
     const result = await invoke<{ profile: Profile | null } | null>(
       "file_action",
       {
@@ -655,6 +1066,11 @@ async function fileAction(kind: string) {
     if (result.profile) draft = clone(result.profile);
     syncParameters();
     schedulePreview();
+    if (kind === "import-icc" && view.liveEnabled) {
+      const next = await request({ type: "Live", profile: clone(draft) });
+      setView(next, true);
+      if (next.error) showError(next.error);
+    }
     if (kind.startsWith("export")) toast("已导出到选择的文件");
   } catch (e) {
     showError(e);
@@ -662,7 +1078,8 @@ async function fileAction(kind: string) {
     setBusy(false);
   }
 }
-async function pickProcess() {
+async function pickProcess(fieldSelector = "#process-names") {
+  if (busy) return;
   try {
     const names = native
       ? await invoke<string[]>("running_processes")
@@ -677,9 +1094,10 @@ async function pickProcess() {
         const b = document.createElement("button");
         b.textContent = name;
         b.onclick = () => {
-          const field = $<HTMLTextAreaElement>("#process-names");
-          const lines = field.value.split("\n").filter(Boolean);
-          if (!lines.includes(name)) lines.push(name);
+          const field = $<HTMLTextAreaElement>(fieldSelector);
+          const lines = processNames(field.value);
+          if (!lines.some((line) => line.toLowerCase() === name.toLowerCase()))
+            lines.push(name);
           field.value = lines.join("\n");
           dialog.close();
         };
@@ -698,10 +1116,19 @@ async function pickProcess() {
 }
 async function close() {
   if (native) {
+    if (busy && !updateBusy) {
+      toast("当前操作完成后可关闭窗口");
+      return;
+    }
+    const wasBusy = localBusy;
+    setBusy(true);
     try {
+      await stopLive(true);
       await invoke("close_window", { profile: clone(draft) });
     } catch (e) {
       showError(e);
+    } finally {
+      setBusy(wasBusy);
     }
   } else toast("托盘功能在 Windows 客户端中可用");
 }
@@ -723,14 +1150,48 @@ async function smoke() {
     await updatePreview(++previewRevision);
     checks.referencePreview =
       image.width > 0 &&
-      $<HTMLCanvasElement>("#adjusted").toDataURL() !==
-        $<HTMLCanvasElement>("#original").toDataURL();
+      $("#adjusted").hidden &&
+      $(".original-label").textContent === "显示器实际效果";
     await act({ type: "Compare" });
     checks.compare = view.comparing;
     await act({ type: "Apply", profile: a });
     await act({ type: "Restore" });
     checks.restore =
       !view.error && !view.activeProfile && !view.pendingRecovery;
+    await act({
+      type: "UpdateProfile",
+      id: a.Id,
+      name: `${a.Name} · 游戏绑定`,
+      processes: ["GameA.exe", "GameLauncher.exe"],
+    });
+    const updated = view.settings.Profiles.find(
+      (profile) => profile.Id === a.Id,
+    );
+    checks.profileMetadata =
+      !view.error &&
+      updated?.ProcessNames?.length === 2 &&
+      updated.Name === `${a.Name} · 游戏绑定` &&
+      draft.Color.Brightness === a.Color.Brightness;
+    const ids = view.settings.Profiles.map((profile) => profile.Id);
+    await act({ type: "Reorder", ids: [...ids].reverse() });
+    checks.profileOrder =
+      !view.error &&
+      view.settings.Profiles[0].Id === ids.at(-1) &&
+      view.settings.SelectedProfileId === a.Id &&
+      draft.Id === a.Id;
+    await act({ type: "Reorder", ids });
+    await act({ type: "UpdateProfile", id: a.Id, name: a.Name, processes: [] });
+    await act({ type: "SetLive", enabled: true, profile: clone(draft) });
+    const live = clone(draft);
+    live.Color.Brightness = 25;
+    await act({ type: "Live", profile: live });
+    checks.liveDisplay =
+      !view.error &&
+      view.activeProfile?.Color.Brightness === 25 &&
+      view.liveVerifying;
+    await act({ type: "Restore" });
+    checks.liveRestore =
+      !view.error && !view.liveEnabled && !view.activeProfile;
     await act({
       type: "Settings",
       settings: { ...view.settings, CloseToTray: true },
@@ -740,7 +1201,7 @@ async function smoke() {
       report: {
         passed: Object.values(checks).every(Boolean),
         checks,
-        version: "0.2.0",
+        version: "0.2.1",
         simulation: true,
       },
     });
@@ -778,6 +1239,12 @@ async function start() {
     };
     $("#apply").onclick = () =>
       void act({ type: "Apply", profile: clone(draft) });
+    $<HTMLInputElement>("#live-adjust").onchange = (event) =>
+      void act({
+        type: "SetLive",
+        enabled: (event.currentTarget as HTMLInputElement).checked,
+        profile: clone(draft),
+      });
     $("#restore").onclick = () => void act({ type: "Restore" });
     $("#compare").onclick = () =>
       void act(
@@ -803,14 +1270,49 @@ async function start() {
           Color: { ...neutral },
         },
       });
-    $("#delete-profile").onclick = async () => {
-      if (
-        (await choose("删除当前方案", `删除“${draft.Name}”？`, [
-          ["delete", "删除"],
-          ["cancel", "取消"],
-        ])) === "delete"
-      )
-        await act({ type: "Delete", id: draft.Id });
+    $("#delete-profile").onclick = () => void deleteProfile(draft.Id);
+    $("#cancel-profile-edit").onclick = () =>
+      $<HTMLDialogElement>("#profile-dialog").close();
+    $<HTMLDialogElement>("#profile-dialog").onclose = () => {
+      const row = $("#profiles").querySelector<HTMLElement>(
+        `[data-profile-id="${managedProfileId}"] .profile-options`,
+      );
+      (
+        row ??
+        $("#profiles").querySelector<HTMLElement>(".selected .profile-card")
+      )?.focus();
+      managedProfileId = null;
+    };
+    $("#profile-form").onsubmit = async (e) => {
+      e.preventDefault();
+      if (busy || !managedProfileId) return;
+      const name = $<HTMLInputElement>("#managed-profile-name").value.trim();
+      const processes = processNames(
+        $<HTMLTextAreaElement>("#profile-processes").value,
+      );
+      const message = $("#profile-message");
+      try {
+        validateMetadata(name, processes);
+        await act(
+          { type: "UpdateProfile", id: managedProfileId, name, processes },
+          "方案信息已保存",
+        );
+        if (view.error) throw new Error(view.error);
+        $<HTMLDialogElement>("#profile-dialog").close();
+      } catch (error) {
+        message.textContent = String(error);
+        message.hidden = false;
+      }
+    };
+    $("#delete-managed-profile").onclick = async () => {
+      if (!managedProfileId) return;
+      await deleteProfile(managedProfileId);
+      if (!view.settings.Profiles.some((p) => p.Id === managedProfileId))
+        $<HTMLDialogElement>("#profile-dialog").close();
+      else if (view.error) {
+        $("#profile-message").textContent = view.error;
+        $("#profile-message").hidden = false;
+      }
     };
     $<HTMLInputElement>("#profile-name").oninput = (e) => {
       draft.Name = (e.currentTarget as HTMLInputElement).value;
@@ -819,7 +1321,7 @@ async function start() {
     $("#reset-color").onclick = () => {
       draft.Color = { ...neutral };
       syncParameters();
-      onDraft();
+      onDraft(true);
     };
     $<HTMLInputElement>("#use-vibrance").onchange = (e) => {
       draft.Color.DigitalVibrance = (e.currentTarget as HTMLInputElement)
@@ -827,7 +1329,7 @@ async function start() {
         ? (view.nvidiaPercent ?? 50)
         : null;
       syncParameters();
-      onDraft();
+      onDraft(true);
     };
     $<HTMLSelectElement>("#monitor").onchange = (e) =>
       void act({
@@ -839,7 +1341,7 @@ async function start() {
       });
     $<HTMLSelectElement>("#icc").onchange = (e) => {
       draft.IccPath = (e.currentTarget as HTMLSelectElement).value || null;
-      onDraft();
+      onDraft(true);
     };
     $("#manual-mode").onclick = () =>
       void act({
@@ -915,12 +1417,16 @@ async function start() {
     ])
       $(`#${kind}`).onclick = () => void fileAction(kind);
     $("#pick-process").onclick = () => void pickProcess();
+    $("#pick-profile-process").onclick = () =>
+      void pickProcess("#profile-processes");
     $("#tray").onclick = () => void close();
     $("#quit").onclick = () => {
       if (native) void invoke("quit").catch(showError);
       else toast("界面预览可直接关闭浏览器标签");
     };
     $("#refresh").onclick = () => void act({ type: "Refresh" });
+    $("#check-update").onclick = () => void checkUpdate();
+    $("#install-update").onclick = () => void installUpdate();
     $("#settings-form").onsubmit = async (e) => {
       e.preventDefault();
       const settings = {
@@ -928,10 +1434,9 @@ async function start() {
         StartWithWindows: $<HTMLInputElement>("#autostart").checked,
         CloseToTray: $<HTMLInputElement>("#close-tray").checked,
         RestoreOnExit: $<HTMLInputElement>("#restore-exit").checked,
-        GameProcesses: $<HTMLTextAreaElement>("#process-names")
-          .value.split("\n")
-          .map((v) => v.trim())
-          .filter(Boolean),
+        GameProcesses: processNames(
+          $<HTMLTextAreaElement>("#process-names").value,
+        ),
         GameProfileId: $<HTMLSelectElement>("#game-profile").value,
         PollSeconds: Number($<HTMLInputElement>("#poll-seconds").value),
       };
@@ -944,23 +1449,31 @@ async function start() {
         return;
       }
       if (
-        !settings.GameProcesses.length ||
         settings.GameProcesses.length > 16 ||
         settings.GameProcesses.some(
-          (v) =>
-            v.length > 200 ||
-            /[\\/:*?"\x00]/.test(v) ||
-            !v.toLowerCase().endsWith(".exe"),
+          (name) =>
+            name.length > 200 ||
+            /[\\/:*?"\x00]/.test(name) ||
+            !name.toLowerCase().endsWith(".exe"),
         )
       ) {
-        showError("请填写 1–16 个 .exe 文件名，不要填写路径");
+        showError("请填写最多 16 个 .exe 文件名，不要填写路径");
         return;
       }
       await act({ type: "Settings", settings }, "设置已保存");
+      if (!view.error) renderSettings();
       $("#settings-message").textContent = view.error ? "" : "设置已保存";
     };
     if (native) {
       await listen<View>("state", (e) => setView(e.payload, true));
+      await listen<UpdateProgress>("update-progress", (event) => {
+        const { downloaded, total } = event.payload;
+        $<HTMLProgressElement>("#update-progress").value = total
+          ? (downloaded / total) * 100
+          : 0;
+        $("#update-status").textContent =
+          `正在下载 ${(downloaded / 1024 / 1024).toFixed(1)} / ${(total / 1024 / 1024).toFixed(1)} MB…`;
+      });
       await listen("operation-start", () => externalBusy(true));
       await listen("operation-end", () => externalBusy(false));
       await listen("request-close", () => void close());

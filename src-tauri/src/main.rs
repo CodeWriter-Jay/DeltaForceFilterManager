@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod controller;
+mod updater;
 use base64::Engine;
 use controller::{Controller, Shared, View};
 use filter_core::{
@@ -10,7 +11,7 @@ use filter_core::{
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{
@@ -24,13 +25,38 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum Request {
-    Apply { profile: Profile },
+    Apply {
+        profile: Profile,
+    },
+    Live {
+        profile: Profile,
+    },
+    SetLive {
+        enabled: bool,
+        profile: Profile,
+    },
     Restore,
     Compare,
-    Select { id: String },
-    SaveProfile { profile: Profile },
-    Delete { id: String },
-    Settings { settings: Settings },
+    Select {
+        id: String,
+    },
+    SaveProfile {
+        profile: Profile,
+    },
+    UpdateProfile {
+        id: String,
+        name: String,
+        processes: Vec<String>,
+    },
+    Reorder {
+        ids: Vec<String>,
+    },
+    Delete {
+        id: String,
+    },
+    Settings {
+        settings: Settings,
+    },
     Toggle,
     Refresh,
 }
@@ -59,10 +85,18 @@ async fn mutate(shared: tauri::State<'_, Arc<Shared>>, request: Request) -> Resu
         c.error = None;
         let result = match request {
             Request::Apply { profile } => c.apply(profile),
+            Request::Live { profile } => c.apply_live(profile),
+            Request::SetLive { enabled, profile } => c.set_live(enabled, profile),
             Request::Restore => c.restore(true),
-            Request::Compare => c.session.compare(),
+            Request::Compare => c.compare(),
             Request::Select { id } => c.select(&id),
             Request::SaveProfile { profile } => c.save_profile(profile),
+            Request::UpdateProfile {
+                id,
+                name,
+                processes,
+            } => c.update_profile(&id, name, processes),
+            Request::Reorder { ids } => c.reorder(ids),
             Request::Delete { id } => c.delete(&id),
             Request::Settings { settings } => c.save_settings(settings),
             Request::Toggle => c.toggle(),
@@ -79,6 +113,60 @@ async fn mutate(shared: tauri::State<'_, Arc<Shared>>, request: Request) -> Resu
     .await
     .map_err(|e| e.to_string())?;
     result
+}
+#[tauri::command]
+async fn check_update(
+    service: tauri::State<'_, Arc<Mutex<updater::Updater>>>,
+) -> Result<updater::UpdateInfo> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service
+            .try_lock()
+            .map_err(|_| "更新操作正在进行".to_string())?
+            .check()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    shared: tauri::State<'_, Arc<Shared>>,
+    service: tauri::State<'_, Arc<Mutex<updater::Updater>>>,
+) -> Result<()> {
+    if !cfg!(windows) || lock(&shared)?.smoke {
+        return Err("自动升级仅支持 Windows 正式客户端".into());
+    }
+    let shared = shared.inner().clone();
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut updater = service.try_lock().map_err(|_| "更新操作正在进行")?;
+        let root = lock(&shared)?.root.clone();
+        let job = updater.download(&root, |progress| {
+            if let Err(error) = app.emit("update-progress", progress) {
+                eprintln!("更新进度通知失败：{error}");
+            }
+        })?;
+        let mut controller = lock(&shared)?;
+        if let Err(error) = controller.prepare_update() {
+            return match job.cleanup() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}；{cleanup}")),
+            };
+        }
+        if let Err(error) = job.launch_helper() {
+            controller.updating = false;
+            return match job.cleanup() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}；{cleanup}")),
+            };
+        }
+        drop(controller);
+        app.exit(0);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn preview_curve(
@@ -367,6 +455,22 @@ fn smoke_complete(
 }
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--install-update") {
+        let result = args
+            .get(index + 1)
+            .ok_or_else(|| "缺少更新任务路径".to_string())
+            .and_then(|path| updater::run_helper(Path::new(path)));
+        if let Err(error) = result {
+            filter_core::platform::error_dialog(&error);
+            std::process::exit(1);
+        }
+        return;
+    }
+    let updated_job = args
+        .iter()
+        .position(|arg| arg == "--after-update")
+        .and_then(|index| args.get(index + 1))
+        .map(PathBuf::from);
     let smoke = args
         .iter()
         .position(|a| a == "--smoke-test")
@@ -375,19 +479,12 @@ fn main() {
     let root = if smoke.is_some() {
         std::env::temp_dir().join(format!("df-smoke-{}", uuid_id()))
     } else {
-        #[cfg(windows)]
-        {
-            match std::env::var_os("LOCALAPPDATA") {
-                Some(p) => PathBuf::from(p).join("DeltaForceFilterManager"),
-                None => {
-                    eprintln!("缺少 LOCALAPPDATA，停止启动以免丢失备份");
-                    return;
-                }
+        match updater::data_root() {
+            Ok(root) => root,
+            Err(error) => {
+                filter_core::platform::error_dialog(&error);
+                return;
             }
-        }
-        #[cfg(not(windows))]
-        {
-            std::env::temp_dir().join("DeltaForceFilterManager-preview")
         }
     };
     let tray_start = args.iter().any(|a| a == "--tray");
@@ -419,6 +516,8 @@ fn main() {
             running_processes,
             close_window,
             quit,
+            check_update,
+            install_update,
             smoke_complete
         ])
         .on_window_event(|window, event| match event {
@@ -450,6 +549,9 @@ fn main() {
         })
         .setup(move |app| {
             let mut controller = Controller::new(root, smoke)?;
+            if updated_job.is_some() {
+                controller.ensure()?;
+            }
             if args.iter().any(|a| a == "--restore") {
                 match controller.restore(false) {
                     Ok(()) => app.handle().exit(0),
@@ -467,6 +569,7 @@ fn main() {
                 wake: std::sync::Condvar::new(),
             });
             app.manage(shared.clone());
+            app.manage(Arc::new(Mutex::new(updater::Updater::default())));
             let open_item = MenuItem::with_id(app, "open", "打开调色工作台", true, None::<&str>)?;
             let toggle = MenuItem::with_id(app, "toggle", "开启 / 关闭滤镜", true, None::<&str>)?;
             let restore = MenuItem::with_id(app, "restore", "恢复原始色彩", true, None::<&str>)?;
@@ -511,58 +614,83 @@ fn main() {
                     lock(&shared)?.error = Some(format!("快捷键 {shortcut} 注册失败：{e}"));
                 }
             }
-            let handle = app.handle().clone();
-            let worker = shared.clone();
-            std::thread::spawn(move || loop {
-                let mut c = match lock(&worker) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("进程检测停止：{e}");
-                        break;
-                    }
-                };
-                if !c.settings.follow_game {
-                    match worker.wake.wait(c) {
-                        Ok(_) => continue,
-                        Err(e) => {
-                            eprintln!("进程等待失败：{e}");
-                            break;
-                        }
-                    }
-                }
-                let seconds = c.settings.poll_seconds;
-                let mut operation_started = false;
-                let changed = match c.poll(|| {
-                    operation_started = true;
-                    if let Err(e) = handle.emit("operation-start", ()) {
-                        eprintln!("自动应用通知失败：{e}");
-                    }
-                }) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let changed = c.error.as_ref() != Some(&e);
-                        c.error = Some(e);
-                        changed
-                    }
-                };
-                if changed {
-                    if let Err(e) = handle.emit("state", c.view()) {
-                        eprintln!("进程状态通知失败：{e}");
-                    }
-                }
-                if operation_started {
-                    if let Err(e) = handle.emit("operation-end", ()) {
-                        eprintln!("自动应用通知失败：{e}");
-                    }
-                }
-                if let Err(e) = worker.wake.wait_timeout(c, Duration::from_secs(seconds)) {
-                    eprintln!("进程等待失败：{e}");
-                    break;
-                }
-            });
             if !tray_start {
                 open(app.handle())?;
             }
+            if let Some(job) = &updated_job {
+                updater::confirm_startup(job)?;
+            }
+            let handle = app.handle().clone();
+            let worker = shared.clone();
+            std::thread::spawn(move || {
+                let mut next_poll = std::time::Instant::now();
+                loop {
+                    let mut c = match lock(&worker) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("进程检测停止：{e}");
+                            break;
+                        }
+                    };
+                    if !c.settings.follow_game && c.live_wait().is_none() {
+                        match worker.wake.wait(c) {
+                            Ok(_) => continue,
+                            Err(e) => {
+                                eprintln!("进程等待失败：{e}");
+                                break;
+                            }
+                        }
+                    }
+                    let mut changed = match c.verify_live() {
+                        Ok(changed) => changed,
+                        Err(error) => {
+                            c.error = Some(error);
+                            true
+                        }
+                    };
+                    let mut operation_started = false;
+                    if c.settings.follow_game && std::time::Instant::now() >= next_poll {
+                        next_poll = std::time::Instant::now()
+                            + Duration::from_secs(c.settings.poll_seconds);
+                        changed |= match c.poll(|| {
+                            operation_started = true;
+                            if let Err(e) = handle.emit("operation-start", ()) {
+                                eprintln!("自动应用通知失败：{e}");
+                            }
+                        }) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let changed = c.error.as_ref() != Some(&e);
+                                c.error = Some(e);
+                                changed
+                            }
+                        };
+                    }
+                    if changed {
+                        if let Err(e) = handle.emit("state", c.view()) {
+                            eprintln!("进程状态通知失败：{e}");
+                        }
+                    }
+                    if operation_started {
+                        if let Err(e) = handle.emit("operation-end", ()) {
+                            eprintln!("自动应用通知失败：{e}");
+                        }
+                    }
+                    let poll_wait = c
+                        .settings
+                        .follow_game
+                        .then(|| next_poll.saturating_duration_since(std::time::Instant::now()));
+                    let wait = match (poll_wait, c.live_wait()) {
+                        (Some(a), Some(b)) => a.min(b),
+                        (Some(wait), None) | (None, Some(wait)) => wait,
+                        (None, None) => continue,
+                    };
+                    if let Err(e) = worker.wake.wait_timeout(c, wait) {
+                        eprintln!("进程等待失败：{e}");
+                        break;
+                    }
+                }
+            });
             Ok(())
         });
     match builder.build(tauri::generate_context!()) {

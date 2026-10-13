@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::{
     path::PathBuf,
     sync::{Condvar, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub struct Shared {
@@ -18,6 +18,7 @@ pub struct Shared {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct View {
+    pub app_version: String,
     pub settings: Settings,
     pub monitors: Vec<Monitor>,
     pub icc_profiles: Vec<String>,
@@ -34,6 +35,8 @@ pub struct View {
     pub smoke: bool,
     pub supported: bool,
     pub startup_actual: bool,
+    pub live_enabled: bool,
+    pub live_verifying: bool,
 }
 pub struct Controller {
     pub settings: Settings,
@@ -54,6 +57,9 @@ pub struct Controller {
     nvidia_message: String,
     pub smoke_report: Option<PathBuf>,
     pub startup_actual: bool,
+    pub live_enabled: bool,
+    pub updating: bool,
+    live_verification: Option<(Instant, usize)>,
 }
 impl Controller {
     pub fn new(root: PathBuf, smoke_report: Option<PathBuf>) -> Result<Self> {
@@ -69,6 +75,7 @@ impl Controller {
             Err(e) => (Settings::default(), Some(e), true),
         };
         let draft = settings.selected().clone();
+        let live_enabled = settings.live_adjust && (cfg!(windows) || smoke);
         #[cfg(windows)]
         let backend: Box<dyn Backend> = if smoke {
             Box::new(Simulated::default())
@@ -96,6 +103,9 @@ impl Controller {
             nvidia_message: String::new(),
             smoke_report,
             startup_actual: false,
+            live_enabled,
+            updating: false,
+            live_verification: None,
         };
         if let Err(e) = c.refresh() {
             c.error = Some(e);
@@ -117,6 +127,7 @@ impl Controller {
     }
     pub fn view(&self) -> View {
         View {
+            app_version: env!("CARGO_PKG_VERSION").into(),
             settings: self.settings.clone(),
             monitors: self.monitors.clone(),
             icc_profiles: self.icc_profiles.clone(),
@@ -136,6 +147,8 @@ impl Controller {
             smoke: self.smoke,
             supported: cfg!(windows) || self.smoke,
             startup_actual: self.startup_actual,
+            live_enabled: self.live_enabled && (cfg!(windows) || self.smoke),
+            live_verifying: self.live_verification.is_some(),
         }
     }
     pub fn monitor(&self) -> Result<Monitor> {
@@ -199,7 +212,7 @@ impl Controller {
         match nv {
             Ok(percent) => {
                 self.nvidia_percent = Some(percent);
-                self.nvidia_message = format!("NVIDIA 已连接 · 当前 {percent}%");
+                self.nvidia_message = format!("NVIDIA 已连接 · 上次读取 {percent}%");
             }
             Err(e) => {
                 self.nvidia_percent = None;
@@ -209,7 +222,9 @@ impl Controller {
         Ok(())
     }
     pub fn ensure(&self) -> Result<()> {
-        if self.blocked {
+        if self.updating {
+            Err("正在升级，请等待程序重新启动".into())
+        } else if self.blocked {
             Err("配置或备份损坏，请先保留并修复原文件；已禁止覆盖".into())
         } else {
             Ok(())
@@ -242,13 +257,14 @@ impl Controller {
             }
             return Err(e);
         }
-        if self.settings.follow_game != settings.follow_game
-            || self.settings.game_processes != settings.game_processes
-        {
+        if self.settings.follow_game != settings.follow_game {
             self.watcher = Watcher::default();
             self.game_running = false;
         }
         let monitor_changed = self.settings.monitor_id != settings.monitor_id;
+        if self.settings.live_adjust != settings.live_adjust {
+            self.live_enabled = settings.live_adjust;
+        }
         self.startup_actual = settings.start_with_windows;
         self.settings = settings;
         if monitor_changed {
@@ -262,10 +278,85 @@ impl Controller {
             return Err("本机仅可预览界面，显示器调节需要 Windows".into());
         }
         self.session.apply(&self.monitor()?, &p)?;
+        self.live_enabled = self.settings.live_adjust;
+        self.live_verification = None;
         self.draft = p;
         Ok(())
     }
+    pub fn apply_live(&mut self, profile: Profile) -> Result<()> {
+        self.ensure()?;
+        if !self.live_enabled {
+            return Err("实时调色已暂停，请重新开启实时调色".into());
+        }
+        if !cfg!(windows) && !self.smoke {
+            return Err("实时显示器调色仅支持 Windows".into());
+        }
+        if let Err(error) = self.session.apply_live(&self.monitor()?, &profile) {
+            self.live_enabled = false;
+            self.live_verification = None;
+            return Err(error);
+        }
+        self.draft = profile;
+        self.live_verification = Some((Instant::now() + Duration::from_millis(200), 0));
+        Ok(())
+    }
+    pub fn set_live(&mut self, enabled: bool, profile: Profile) -> Result<()> {
+        self.save_settings(Settings {
+            live_adjust: enabled,
+            ..self.settings.clone()
+        })?;
+        self.live_enabled = enabled;
+        if enabled {
+            self.apply_live(profile)?;
+        }
+        Ok(())
+    }
+    pub fn live_wait(&self) -> Option<Duration> {
+        self.live_verification
+            .map(|(due, _)| due.saturating_duration_since(Instant::now()))
+    }
+    pub fn verify_live(&mut self) -> Result<bool> {
+        let Some((due, step)) = self.live_verification else {
+            return Ok(false);
+        };
+        if Instant::now() < due {
+            return Ok(false);
+        }
+        if let Err(error) = self.session.verify_live(step == 3) {
+            self.live_enabled = false;
+            self.live_verification = None;
+            self.auto_owned = false;
+            return Err(error);
+        }
+        self.live_verification = if step == 3 {
+            None
+        } else {
+            Some((
+                Instant::now() + Duration::from_millis([400, 800, 400][step]),
+                step + 1,
+            ))
+        };
+        Ok(step == 3)
+    }
+    pub fn compare(&mut self) -> Result<()> {
+        self.live_enabled = false;
+        self.live_verification = None;
+        self.session.compare()
+    }
+    pub fn prepare_update(&mut self) -> Result<PathBuf> {
+        self.ensure()?;
+        let backup = self.root.join(format!(
+            "settings.before-update-{}.json",
+            Profile::default().id
+        ));
+        storage::write(&backup, &self.settings)?;
+        self.restore(true)?;
+        self.updating = true;
+        Ok(backup)
+    }
     pub fn restore(&mut self, suppress: bool) -> Result<()> {
+        self.live_enabled = false;
+        self.live_verification = None;
         if self.invalid_recovery {
             return Err("恢复备份损坏，原文件已保留；无法宣称恢复成功".into());
         }
@@ -293,7 +384,9 @@ impl Controller {
             .cloned()
             .ok_or("方案不存在")?;
         // Switching an enabled scheme must update the physical display, including every parameter.
-        if self.session.active.is_some() {
+        if self.live_enabled {
+            self.apply_live(p.clone())?;
+        } else if self.session.active.is_some() {
             self.apply(p.clone())?;
         }
         let mut settings = self.settings.clone();
@@ -304,6 +397,7 @@ impl Controller {
     }
     pub fn save_profile(&mut self, p: Profile) -> Result<()> {
         p.validate()?;
+        let new_selection = self.draft.id != p.id;
         let mut settings = self.settings.clone();
         match settings.profiles.iter_mut().find(|v| v.id == p.id) {
             Some(old) => *old = p.clone(),
@@ -311,10 +405,56 @@ impl Controller {
         }
         settings.selected_profile_id = Some(p.id.clone());
         self.save_settings(settings)?;
-        self.draft = p;
+        self.draft = p.clone();
+        if new_selection && self.live_enabled {
+            self.apply_live(p)?;
+        }
         Ok(())
     }
+    pub fn update_profile(&mut self, id: &str, name: String, processes: Vec<String>) -> Result<()> {
+        let mut settings = self.settings.clone();
+        let profile = settings
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("方案不存在")?;
+        profile.name = name;
+        profile.process_names = processes;
+        let profile = profile.clone();
+        self.save_settings(settings)?;
+        // Metadata changes must preserve unsaved color adjustments and the display session.
+        if self.draft.id == id {
+            self.draft.name = profile.name.clone();
+            self.draft.process_names = profile.process_names.clone();
+        }
+        if let Some(active) = self.session.active.as_mut().filter(|p| p.id == id) {
+            active.name = profile.name;
+            active.process_names = profile.process_names;
+        }
+        Ok(())
+    }
+    pub fn reorder(&mut self, ids: Vec<String>) -> Result<()> {
+        if ids.len() != self.settings.profiles.len() {
+            return Err("排序必须包含所有方案且不能重复".into());
+        }
+        let mut remaining = self.settings.profiles.clone();
+        let mut settings = self.settings.clone();
+        // A missing selection ID used to mean the first row; moving it must not select another scheme.
+        settings.selected_profile_id = Some(self.settings.selected().id.clone());
+        settings.profiles.clear();
+        for id in ids {
+            let index = remaining
+                .iter()
+                .position(|p| p.id == id)
+                .ok_or("排序中包含重复或不存在的方案")?;
+            settings.profiles.push(remaining.remove(index));
+        }
+        self.save_settings(settings)
+    }
     pub fn delete(&mut self, id: &str) -> Result<()> {
+        if !self.settings.profiles.iter().any(|p| p.id == id) {
+            return Err("方案不存在".into());
+        }
         if self.settings.profiles.len() == 1 {
             return Err("至少保留一个方案".into());
         }
@@ -330,12 +470,15 @@ impl Controller {
             settings.game_profile_id = None;
         }
         self.save_settings(settings)?;
-        self.draft = self.settings.selected().clone();
+        if self.draft.id == id {
+            self.draft = self.settings.selected().clone();
+        }
         Ok(())
     }
     pub fn poll(&mut self, on_start: impl FnOnce()) -> Result<bool> {
         if !self.settings.follow_game
             || self.blocked
+            || self.updating
             || self.session.snapshot.is_some()
                 && self.session.active.is_none()
                 && !self.session.comparing
@@ -347,30 +490,34 @@ impl Controller {
         } else {
             platform::processes()?
         };
-        let running = names.iter().any(|p| {
-            self.settings
-                .game_processes
-                .iter()
-                .any(|g| p.eq_ignore_ascii_case(g))
-        });
+        self.poll_processes(&names, on_start)
+    }
+    fn poll_processes(&mut self, names: &[String], on_start: impl FnOnce()) -> Result<bool> {
+        let profile = self.settings.matching_profile(names).cloned();
+        let running = profile.is_some();
+        let changed = self.game_running != running;
         self.game_running = running;
-        match self.watcher.observe(running) {
+        // Commit the observation only after the display operation succeeds, so failures can be retried.
+        let mut watcher = self.watcher.clone();
+        match watcher.observe_profile(profile.as_ref().map(|p| p.id.as_str())) {
             Transition::Started => {
                 on_start();
-                let p = self.settings.game_profile().clone();
-                self.apply(p)?;
+                self.apply(profile.ok_or("匹配的方案不存在")?)?;
                 self.auto_owned = true;
-                Ok(true)
             }
             Transition::Exited => {
                 if self.auto_owned {
                     on_start();
                     self.restore(false)?;
                 }
-                Ok(true)
             }
-            Transition::None => Ok(false),
+            Transition::None => {
+                self.watcher = watcher;
+                return Ok(changed);
+            }
         }
+        self.watcher = watcher;
+        Ok(true)
     }
 }
 #[derive(Default)]
@@ -466,5 +613,181 @@ mod tests {
             b"corrupt"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bound_games_switch_by_priority_and_restore_the_original_snapshot() {
+        let mut c = controller();
+        let mut settings = c.settings.clone();
+        settings.follow_game = true;
+        settings.game_processes.clear();
+        settings.profiles[0].process_names = vec!["a.exe".into()];
+        settings.profiles[1].process_names = vec!["b.exe".into()];
+        let a = settings.profiles[0].clone();
+        let b = settings.profiles[1].clone();
+        c.save_settings(settings).unwrap();
+        assert!(c.poll_processes(&["B.EXE".into()], || {}).unwrap());
+        assert_eq!(c.session.active.as_ref().unwrap().id, b.id);
+        let original = c.session.snapshot.as_ref().unwrap().gamma_ramp.clone();
+        assert!(!c
+            .poll_processes(&["b.exe".into()], || panic!("unchanged target"))
+            .unwrap());
+        assert!(c
+            .poll_processes(&["a.exe".into(), "b.exe".into()], || {})
+            .unwrap());
+        assert_eq!(c.session.active.as_ref().unwrap().id, a.id);
+        assert_eq!(c.session.snapshot.as_ref().unwrap().gamma_ramp, original);
+        let mut ids: Vec<_> = c.settings.profiles.iter().map(|p| p.id.clone()).collect();
+        ids.swap(0, 1);
+        c.reorder(ids).unwrap();
+        assert!(c
+            .poll_processes(&["a.exe".into(), "b.exe".into()], || {})
+            .unwrap());
+        assert_eq!(c.session.active.as_ref().unwrap().id, b.id);
+        assert!(c.poll_processes(&[], || {}).unwrap());
+        assert!(!c.auto_owned);
+        assert!(c.session.snapshot.is_none());
+        let monitor = c.monitor().unwrap();
+        assert_eq!(c.session.backend.read_ramp(&monitor).unwrap(), original);
+        std::fs::remove_dir_all(c.root).unwrap();
+    }
+
+    #[test]
+    fn manual_restore_stays_suppressed_across_binding_edits_and_game_switches() {
+        let mut c = controller();
+        let mut settings = c.settings.clone();
+        settings.follow_game = true;
+        settings.profiles[0].process_names = vec!["a.exe".into()];
+        settings.profiles[1].process_names = vec!["b.exe".into()];
+        c.save_settings(settings).unwrap();
+        c.poll_processes(&["a.exe".into()], || {}).unwrap();
+        c.restore(true).unwrap();
+        let b = c.settings.profiles[1].id.clone();
+        c.update_profile(
+            &b,
+            "Game B".into(),
+            vec!["b.exe".into(), "launcher.exe".into()],
+        )
+        .unwrap();
+        assert!(!c
+            .poll_processes(&["b.exe".into()], || panic!("suppressed"))
+            .unwrap());
+        assert!(c.session.active.is_none());
+        c.poll_processes(&[], || {}).unwrap();
+        c.poll_processes(&["b.exe".into()], || {}).unwrap();
+        assert_eq!(c.session.active.as_ref().unwrap().id, b);
+        c.restore(false).unwrap();
+        std::fs::remove_dir_all(c.root).unwrap();
+    }
+
+    #[test]
+    fn failed_automatic_apply_can_retry_the_same_game() {
+        let mut c = controller();
+        let mut settings = c.settings.clone();
+        settings.follow_game = true;
+        settings.monitor_id = Some("disconnected".into());
+        settings.profiles[0].process_names = vec!["game.exe".into()];
+        c.save_settings(settings).unwrap();
+        assert!(c.poll_processes(&["game.exe".into()], || {}).is_err());
+        assert!(c.session.active.is_none());
+        c.save_settings(Settings {
+            monitor_id: None,
+            ..c.settings.clone()
+        })
+        .unwrap();
+        assert!(c.poll_processes(&["game.exe".into()], || {}).unwrap());
+        assert!(c.auto_owned);
+        c.restore(false).unwrap();
+        std::fs::remove_dir_all(c.root).unwrap();
+    }
+
+    #[test]
+    fn managing_schemes_preserves_drafts_and_persists_order_and_bindings() {
+        let mut c = controller();
+        let selected = c.settings.selected().id.clone();
+        c.draft.color.brightness = 25;
+        c.update_profile(&selected, "Renamed".into(), vec!["game.exe".into()])
+            .unwrap();
+        assert_eq!(c.draft.color.brightness, 25);
+        assert_eq!(c.settings.selected().color.brightness, 0);
+        let mut ids: Vec<_> = c.settings.profiles.iter().map(|p| p.id.clone()).collect();
+        ids.reverse();
+        c.reorder(ids.clone()).unwrap();
+        assert_eq!(c.settings.selected().id, selected);
+        assert_eq!(c.settings.game_profile().id, selected);
+        assert_eq!(c.draft.color.brightness, 25);
+        assert!(c.reorder(vec![selected.clone(); ids.len()]).is_err());
+        let path = c.root.join("settings.json");
+        let saved: Settings = storage::read(&path).unwrap();
+        assert_eq!(
+            saved
+                .profiles
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(saved.selected().name, "Renamed");
+        assert_eq!(saved.selected().process_names, ["game.exe"]);
+        let other = c.settings.profiles[0].id.clone();
+        c.settings.game_profile_id = Some(other.clone());
+        c.delete(&other).unwrap();
+        assert_eq!(c.draft.color.brightness, 25);
+        assert_eq!(c.settings.selected().id, selected);
+        assert!(c.settings.game_profile_id.is_none());
+        let reopened = Controller::new(c.root.clone(), Some(c.root.join("report.json"))).unwrap();
+        assert_eq!(reopened.settings.profiles, c.settings.profiles);
+        assert_eq!(reopened.settings.selected().id, selected);
+        c.apply(c.draft.clone()).unwrap();
+        assert!(c.delete(&selected).is_err());
+        c.restore(false).unwrap();
+        for id in ids.into_iter().filter(|id| id != &selected && id != &other) {
+            c.delete(&id).unwrap();
+        }
+        assert!(c.delete(&selected).is_err());
+        std::fs::remove_dir_all(c.root).unwrap();
+    }
+
+    #[test]
+    fn live_color_drafts_are_unsaved_and_restore_cancels_pending_verification() {
+        let mut c = controller();
+        let mut profile = c.draft.clone();
+        profile.color.gamma = 1.3;
+        c.apply_live(profile.clone()).unwrap();
+        assert_eq!(c.session.active.as_ref().unwrap().color, profile.color);
+        assert_ne!(c.settings.selected().color, profile.color);
+        assert!(c.view().live_verifying);
+        for step in 0..4 {
+            c.live_verification = Some((Instant::now(), step));
+            c.verify_live().unwrap();
+        }
+        assert!(!c.view().live_verifying);
+        c.restore(true).unwrap();
+        assert!(!c.view().live_enabled);
+        assert!(c.live_wait().is_none());
+        assert!(c.apply_live(profile.clone()).is_err());
+        c.set_live(true, profile).unwrap();
+        c.restore(false).unwrap();
+        std::fs::remove_dir_all(c.root).unwrap();
+    }
+
+    #[test]
+    fn updating_backs_up_settings_restores_display_and_reopens_the_same_schemes() {
+        let mut c = controller();
+        let mut profile = c.draft.clone();
+        profile.name = "升级保留方案".into();
+        profile.process_names = vec!["game.exe".into()];
+        profile.color.brightness = 35;
+        c.save_profile(profile.clone()).unwrap();
+        c.apply_live(profile.clone()).unwrap();
+        let backup = c.prepare_update().unwrap();
+        let saved: Settings = storage::read(&backup).unwrap();
+        assert_eq!(saved.profiles, c.settings.profiles);
+        assert!(c.session.snapshot.is_none());
+        assert!(c.updating);
+        assert!(c.apply_live(profile).is_err());
+        let reopened = Controller::new(c.root.clone(), Some(c.root.join("report.json"))).unwrap();
+        assert_eq!(reopened.settings.profiles, c.settings.profiles);
+        std::fs::remove_dir_all(c.root).unwrap();
     }
 }

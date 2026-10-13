@@ -29,6 +29,7 @@
           </button>
         </div>
         <div id="profiles" class="profiles" aria-label="色彩方案"></div>
+        <p class="profile-order-hint">⋮⋮ 拖动排序 · 靠前优先</p>
         <div class="side-actions">
           <button id="import-profile">↓ 导入方案</button
           ><button id="export-profile">↑ 导出方案</button>
@@ -41,7 +42,7 @@
           </div>
           <p id="game-hint">按需开启，后台不检测进程</p>
           <div class="version">
-            <span class="status-dot"></span> LOCAL · v0.2.0
+            <span class="status-dot"></span> LOCAL · v0.2.1
           </div>
         </div>
       </aside>
@@ -168,42 +169,53 @@
             </div>
           </section>
           <aside class="inspector" aria-label="色彩调节参数">
-            <div class="inspector-heading">
-              <h2>色彩调节</h2>
-              <button id="reset-color" class="quiet-button">重置参数</button>
-            </div>
-            <label class="field-label" for="monitor">目标显示器</label
-            ><select id="monitor"></select>
-            <div class="parameter-group">
-              <h3>明暗层次 <span>TONAL</span></h3>
-              <div id="tonal-parameters"></div>
-            </div>
-            <details class="parameter-group">
-              <summary>RGB 增益 <span>CHANNELS</span></summary>
-              <div id="rgb-parameters"></div>
-            </details>
-            <div class="parameter-group nvidia-group">
+            <div class="inspector-scroll">
+              <div class="inspector-heading">
+                <h2>色彩调节</h2>
+                <button id="reset-color" class="quiet-button">重置参数</button>
+              </div>
               <div class="toggle-row">
-                <label for="use-vibrance">NVIDIA 数字振动</label
-                ><input id="use-vibrance" type="checkbox" role="switch" />
+                <label for="live-adjust">显示器实时调色</label>
+                <input id="live-adjust" type="checkbox" role="switch" />
               </div>
-              <div id="vibrance-parameter"></div>
-              <p id="nvidia-status" class="field-help"></p>
-            </div>
-            <details class="parameter-group">
-              <summary>ICC 配置 <span>CALIBRATION</span></summary>
-              <label class="sr-only" for="icc">ICC 配置</label
-              ><select id="icc">
-                <option value="">原始显示器校准</option>
-              </select>
-              <div class="icc-actions">
-                <button id="import-icc" class="quiet-button">导入 ICC</button
-                ><button id="export-icc" class="quiet-button">导出 ICC</button>
-              </div>
-              <p class="field-help">
-                有 vcgt 的配置叠加校准曲线；没有则使用中性曲线。
+              <p id="live-help" class="field-help">
+                调整参数会立即作用于显示器；方案需另行保存。
               </p>
-            </details>
+              <label class="field-label" for="monitor">目标显示器</label
+              ><select id="monitor"></select>
+              <div class="parameter-group">
+                <h3>明暗层次 <span>TONAL</span></h3>
+                <div id="tonal-parameters"></div>
+              </div>
+              <details class="parameter-group">
+                <summary>RGB 增益 <span>CHANNELS</span></summary>
+                <div id="rgb-parameters"></div>
+              </details>
+              <div class="parameter-group nvidia-group">
+                <div class="toggle-row">
+                  <label for="use-vibrance">NVIDIA 数字振动</label
+                  ><input id="use-vibrance" type="checkbox" role="switch" />
+                </div>
+                <div id="vibrance-parameter"></div>
+                <p id="nvidia-status" class="field-help"></p>
+              </div>
+              <details class="parameter-group">
+                <summary>ICC 配置 <span>CALIBRATION</span></summary>
+                <label class="sr-only" for="icc">ICC 配置</label
+                ><select id="icc">
+                  <option value="">原始显示器校准</option>
+                </select>
+                <div class="icc-actions">
+                  <button id="import-icc" class="quiet-button">导入 ICC</button
+                  ><button id="export-icc" class="quiet-button">
+                    导出 ICC
+                  </button>
+                </div>
+                <p class="field-help">
+                  有 vcgt 的配置叠加校准曲线；没有则使用中性曲线。
+                </p>
+              </details>
+            </div>
             <div class="apply-area">
               <p id="draft-state">当前方案已保存</p>
               <button id="apply" class="primary-button">
@@ -242,25 +254,25 @@
             <section class="settings-card">
               <h2>跟随游戏进程</h2>
               <label class="field-label" for="process-names"
-                >游戏进程文件名</label
+                >兼容联动进程文件名</label
               >
               <div class="process-entry">
                 <textarea
                   id="process-names"
                   rows="3"
-                  placeholder="每行一个 .exe 文件名"
+                  placeholder="每行一个 .exe 文件名，可留空"
                 ></textarea
                 ><button id="pick-process" type="button" class="outline-button">
                   选择运行中的进程
                 </button>
               </div>
               <p class="field-help">
-                候选进程名可能随发行平台变化；请在游戏运行时确认。任一匹配即可触发。
+                在左侧方案的“管理”中绑定各游戏进程。绑定方案优先；这里的进程使用下方默认方案，可留空。
               </p>
               <div class="settings-fields">
                 <div>
                   <label class="field-label" for="game-profile"
-                    >自动应用方案</label
+                    >默认自动方案</label
                   ><select id="game-profile"></select>
                 </div>
                 <div>
@@ -285,7 +297,8 @@
               <div><span>恢复原始色彩</span><kbd>Ctrl + Shift + F11</kbd></div>
               <p class="field-help">
                 设置与恢复备份：%LOCALAPPDATA%\DeltaForceFilterManager<br />Windows
-                x64 · SDR · WebView2 · 本地处理，无后台网络请求
+                x64 · SDR · WebView2 ·
+                调色与图片本机处理，仅检查或下载更新时联网
               </p>
             </section>
             <div class="settings-save">
@@ -296,6 +309,39 @@
               </button>
             </div>
           </form>
+          <section class="settings-card" aria-labelledby="update-heading">
+            <h2 id="update-heading">版本与更新</h2>
+            <p>当前版本 <strong id="current-version">0.2.1</strong></p>
+            <p id="update-status" role="status">
+              点击检查 GitHub 上的最新正式版本。
+            </p>
+            <p id="update-notes" class="field-help" hidden></p>
+            <progress
+              id="update-progress"
+              max="100"
+              value="0"
+              aria-label="更新下载进度"
+              hidden
+            ></progress>
+            <div class="update-actions">
+              <button id="check-update" type="button" class="outline-button">
+                检查更新
+              </button>
+              <button
+                id="install-update"
+                type="button"
+                class="primary-button"
+                hidden
+              >
+                下载并重启升级
+              </button>
+            </div>
+            <p class="field-help">
+              方案与导入的 ICC 保存在
+              %LOCALAPPDATA%\DeltaForceFilterManager，替换 EXE
+              后继续沿用。升级前自动备份方案并恢复原始色彩。
+            </p>
+          </section>
         </main>
         <footer class="footer">
           <span><span class="small-dot"></span> SDR 工作空间</span
@@ -304,15 +350,50 @@
         </footer>
       </div>
     </div>
-    <dialog id="confirm-dialog">
+    <dialog id="confirm-dialog" aria-labelledby="dialog-title">
       <form method="dialog">
         <h2 id="dialog-title"></h2>
         <p id="dialog-message"></p>
         <div id="dialog-choices"></div>
       </form>
     </dialog>
-    <dialog id="process-dialog">
-      <h2>选择运行中的进程</h2>
+    <dialog id="profile-dialog" aria-labelledby="profile-dialog-title">
+      <form id="profile-form">
+        <h2 id="profile-dialog-title">管理方案</h2>
+        <label class="field-label" for="managed-profile-name">方案名称</label>
+        <input id="managed-profile-name" maxlength="80" required />
+        <label class="field-label" for="profile-processes"
+          >绑定进程文件名</label
+        >
+        <textarea
+          id="profile-processes"
+          rows="3"
+          placeholder="每行一个 .exe 文件名，可留空"
+        ></textarea>
+        <button id="pick-profile-process" type="button" class="outline-button">
+          选择运行中的进程
+        </button>
+        <p class="field-help">
+          开启“跟随游戏”后自动应用此方案。多个方案匹配时按左侧顺序选择；全部匹配进程退出后恢复。
+        </p>
+        <p id="profile-message" role="alert" hidden></p>
+        <div class="profile-dialog-actions">
+          <button
+            id="delete-managed-profile"
+            type="button"
+            class="quiet-button"
+          >
+            删除方案
+          </button>
+          <button id="cancel-profile-edit" type="button" class="outline-button">
+            取消
+          </button>
+          <button type="submit" class="primary-button">保存更改</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="process-dialog" aria-labelledby="process-dialog-title">
+      <h2 id="process-dialog-title">选择运行中的进程</h2>
       <label for="process-search" class="sr-only">搜索进程</label
       ><input id="process-search" placeholder="搜索 .exe 文件名" />
       <div id="process-list"></div>

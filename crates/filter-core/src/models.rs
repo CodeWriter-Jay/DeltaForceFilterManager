@@ -65,6 +65,8 @@ pub struct Profile {
     pub name: String,
     pub icc_path: Option<String>,
     pub color: Color,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub process_names: Vec<String>,
 }
 impl Default for Profile {
     fn default() -> Self {
@@ -73,6 +75,7 @@ impl Default for Profile {
             name: "我的方案".into(),
             icc_path: None,
             color: Color::default(),
+            process_names: vec![],
         }
     }
 }
@@ -92,8 +95,31 @@ impl Profile {
         {
             return Err("ICC 路径必须为完整路径".into());
         }
-        self.color.validate()
+        self.color.validate()?;
+        validate_process_names(&self.process_names)
     }
+}
+
+pub fn validate_process_names(names: &[String]) -> Result<()> {
+    if names.len() > 16 {
+        return Err("最多填写 16 个进程文件名".into());
+    }
+    let mut unique = HashSet::new();
+    for name in names {
+        if name.trim().is_empty()
+            || name != name.trim()
+            || name.chars().count() > 200
+            || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+            || name.chars().any(char::is_control)
+            || !name.to_ascii_lowercase().ends_with(".exe")
+        {
+            return Err("请填写进程文件名（如 game.exe），不要填写路径".into());
+        }
+        if !unique.insert(name.to_ascii_lowercase()) {
+            return Err("进程文件名重复（不区分大小写）".into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,6 +136,12 @@ pub struct Settings {
     pub start_with_windows: bool,
     pub close_to_tray: bool,
     pub restore_on_exit: bool,
+    pub live_adjust: bool,
+    // v0.1 serialized these computed getters. Only IDs and Profiles are authoritative.
+    #[serde(rename = "SelectedProfile", skip_serializing)]
+    pub legacy_selected_profile: Option<Box<Profile>>,
+    #[serde(rename = "GameProfile", skip_serializing)]
+    pub legacy_game_profile: Option<Box<Profile>>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -131,6 +163,7 @@ impl Default for Settings {
                 highlights,
                 ..Color::default()
             },
+            process_names: vec![],
         })
         .collect();
         Self {
@@ -148,6 +181,9 @@ impl Default for Settings {
             start_with_windows: false,
             close_to_tray: true,
             restore_on_exit: true,
+            live_adjust: true,
+            legacy_selected_profile: None,
+            legacy_game_profile: None,
         }
     }
 }
@@ -171,15 +207,15 @@ impl Settings {
                 return Err("选中的方案不存在".into());
             }
         }
-        if !(2..=30).contains(&self.poll_seconds) || !(1..=16).contains(&self.game_processes.len())
-        {
-            return Err("检测间隔应为 2–30 秒，需要 1–16 个游戏进程名".into());
+        if !(2..=30).contains(&self.poll_seconds) || self.game_processes.len() > 16 {
+            return Err("检测间隔应为 2–30 秒，最多 16 个游戏进程名".into());
         }
-        for p in &self.game_processes {
-            if p.trim().is_empty()
-                || p.len() > 800
-                || p.contains(['/', '\\', ':', '*', '?', '"', '\0'])
-                || !p.to_ascii_lowercase().ends_with(".exe")
+        // Keep the legacy rules readable, including duplicate global process names.
+        for process in &self.game_processes {
+            if process.trim().is_empty()
+                || process.len() > 800
+                || process.contains(['/', '\\', ':', '*', '?', '"', '\0'])
+                || !process.to_ascii_lowercase().ends_with(".exe")
             {
                 return Err("请填写进程文件名（如 game.exe），不要填写路径".into());
             }
@@ -197,6 +233,17 @@ impl Settings {
             .iter()
             .find(|p| Some(&p.id) == self.game_profile_id.as_ref())
             .unwrap_or_else(|| self.selected())
+    }
+    pub fn matching_profile(&self, names: &[String]) -> Option<&Profile> {
+        let matches = |processes: &[String]| {
+            processes
+                .iter()
+                .any(|process| names.iter().any(|name| name.eq_ignore_ascii_case(process)))
+        };
+        self.profiles
+            .iter()
+            .find(|profile| matches(&profile.process_names))
+            .or_else(|| matches(&self.game_processes).then(|| self.game_profile()))
     }
 }
 
