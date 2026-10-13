@@ -10,15 +10,19 @@
 
 支持 Windows 10/11 x64、SDR。便携版和单文件 EXE 使用系统 **Microsoft Edge WebView2**，不捆绑 Chromium、完整 WebView2 或 .NET。客户端下载在 Release 的 **Assets** 中；Actions 中的 artifact 是构建验证包。
 
-## v0.2.0 的变化
+## 程序截图
 
-- 替换 WinForms，采用 HTML 工作台：参考图片左右分屏、RGB 曲线、参数面板、方案与设置页；无远程字体或前端资源。
-- 替换 .NET 后台，使用 Rust + Win32/WCS/NVAPI。**v0.1.0 的 47,410,780 字节 ZIP 捆绑了完整 .NET Desktop Runtime**，其中单文件 EXE 约 111 MiB；这不是色彩算法本身的大小。新版共享系统 WebView2，实际客户端大小见 Release。
-- 修复本版与参考项目 [issue #8](https://github.com/q974491089/filter-manage/issues/8) 症状相关的缺陷：启用时切换方案会真正应用完整参数；ICC/NVIDIA 操作先完成，最后一次写入整套 RGB LUT；即时回读后，在 200、400、800 ms 处复查并有限重试，再等 400 ms 做最终确认。失败时恢复原始状态，恢复失败保留备份并阻止继续应用。
-- 保持 v0.1.0 的设置与恢复备份 JSON 格式（PascalCase、SchemaVersion 1）。未完成的旧备份在启动时优先恢复。
-- 关闭到托盘时**销毁 WebView 窗口**，释放界面和图片缓存；再打开重新创建窗口，保留当前草稿和本次选中的参考图片路径。图片内容不写入设置。
+调色工作台：参考图片分屏对照、RGB 曲线和参数调节。
 
-issue #8 没有经过确认的根因。本项目回归测试模拟了“写入成功后曲线延迟被重置、数字振动仍保留”的情况，修复的是本项目实际存在的应用顺序、切换和校验缺陷；尚未在问题报告者的显示器/驱动上验证。
+![调色工作台](docs/screenshots/workspace.png)
+
+应用设置：登录启动、托盘、退出恢复和游戏进程联动。
+
+![应用设置](docs/screenshots/settings.png)
+
+紧凑布局：适合较小窗口的工作台。
+
+![紧凑布局](docs/screenshots/compact.png)
 
 ## 功能与使用
 
@@ -42,25 +46,31 @@ issue #8 没有经过确认的根因。本项目回归测试模拟了“写入�
 4. 如需自动启用，在设置中通过 **选择运行中的进程** 确认真实游戏进程，指定自动方案，再切换 **跟随游戏**。
 5. 需要开机启动时，在设置中开启 **随 Windows 登录启动** 并保存。更换 EXE 名称/目录后重新保存此项。
 
-默认 `DeltaForceClient-Win64-Shipping.exe`、`DeltaForceClient.exe` 仅是候选名，可能随平台/版本变化；多个名称是“任一匹配”。自动模式中手动恢复会暂停本次游戏会话的自动应用，直到游戏退出；自动启用后手动更新仍保留游戏退出时恢复的行为。关闭跟随模式会恢复由自动模式拥有的滤镜。没有永久高频校色线程。
+默认游戏进程名为 `DeltaForceClient-Win64-Shipping.exe`、`DeltaForceClient.exe`，可通过 **选择运行中的进程** 调整；填写多个名称时，任一匹配即可触发。自动模式中手动恢复会暂停本次游戏会话的自动应用，直到游戏退出；自动启用后手动更新仍保留游戏退出时恢复的行为。关闭跟随模式会恢复由自动模式启用的滤镜。
 
-## 色彩行为与验证范围
+## 运行说明
 
 ICC 的色彩描述与校准曲线不同：有 `vcgt` 时与调整 LUT 叠加，没有时仍关联系统 ICC，但游戏 LUT 使用中性基准；非色彩管理游戏通常不使用 ICC 的矩阵/色域转换。调色基准始终来自启用前备份，方案切换不会累积曲线。高光压缩不能恢复游戏渲染时已裁剪的细节。
 
-亮度/对比度/Gamma/RGB 使用 Windows Gamma Ramp，与参考项目同类路径；不是 NVIDIA 控制面板数值的精确复制。NVIDIA 数字振动需要显示器由 NVIDIA 显卡直接输出且驱动提供 DVC 扩展接口；不可用时其余调色功能仍可使用。启用数字振动前必须有原始备份。
+亮度、对比度、Gamma 和 RGB 调节使用 Windows Gamma Ramp。NVIDIA 数字振动需要显示器由 NVIDIA 显卡直接输出且驱动提供 DVC 扩展接口；不可用时其余调色功能仍可使用。应用会在启用前备份原始色彩，写入后回读并复查，失败时恢复。
 
-**延迟复查只覆盖有限的应用稳定窗口。** Windows 显示切换、独占全屏、休眠、插拔、夜间模式或其他校色软件仍可能在更晚时间覆盖 LUT，需要重新应用。驱动返回成功也可能静默拒绝，因此读回检查允许 8 位 DAC 的量化误差。开启 HDR/高级色彩时停止 SDR 应用或恢复。克隆显示器共享 GDI source，无法独立调节。
+Windows 显示切换、独占全屏、休眠、插拔、夜间模式或其他校色软件可能重置色彩曲线，遇到此情况可重新应用方案。开启 HDR/高级色彩时停止 SDR 应用或恢复。克隆显示器共享 GDI source，无法独立调节。
 
 滤镜作用于整个目标显示器，包括本应用；图片分屏用于相对对照，不能精确模拟面板、ICC 色域转换或 NVIDIA 数字振动。导入 ICC 后首次系统安装可能受权限限制；遇到错误可先在 Windows 色彩管理中安装，应用不会静默提权。恢复原始默认配置不会卸载已安装的文件或删除导入关联。
 
-设置和恢复备份：`%LOCALAPPDATA%\DeltaForceFilterManager\`。损坏文件不会静默重置或覆盖。恢复失败会保留备份；重新连接原显示器/关闭 HDR 后重试。关闭“退出时恢复”后仍保留备份，下次启动会恢复。紧急恢复在程序未运行时执行：
+关闭到托盘时销毁 WebView 窗口，释放界面和图片缓存；再打开时重新创建窗口，保留当前草稿和本次选中的参考图片路径。图片内容不写入设置。
+
+应用不注入游戏或读取游戏内存。
+
+## 设置与恢复
+
+设置和恢复备份保存在 `%LOCALAPPDATA%\DeltaForceFilterManager\`。保持 v0.1.0 的 JSON 格式（PascalCase、SchemaVersion 1）。未完成的旧备份在启动时优先恢复。
+
+损坏文件不会自动重置或覆盖。恢复失败会保留备份，可在重新连接原显示器或关闭 HDR 后重试。关闭“退出时恢复”后仍保留备份，下次启动会恢复。紧急恢复在程序未运行时执行：
 
 ```powershell
 .\DeltaForceFilterManager.exe --restore
 ```
-
-不注入游戏或读取游戏内存。**CI 使用模拟显示器验证事务与界面，没有验证真实 NVIDIA 驱动、游戏全屏、反作弊兼容性或游戏电脑帧率。** Release 附空闲采样，包含主进程与 WebView2 子进程；托盘数据是在销毁 WebView 后采样，不能用主进程数字代替 GUI 总内存。
 
 ## 开发与验证
 
@@ -89,11 +99,5 @@ web/                 本地 HTML/CSS/TypeScript 工作台
 scripts/             图标源、Windows 原生验证与进程树资源采样
 tests/web/           HTML 交互与视觉验证
 ```
-
-## 参考依据
-
-功能研究参考 [q974491089/filter-manage](https://github.com/q974491089/filter-manage)，研究版本 `26a563b75c59270837638355b94337e7115fb4b3`。独立实现，未复制其 UI、图片或 ICC 素材。
-
-API 依据：[Microsoft WCS](https://learn.microsoft.com/windows/win32/wcs/profile-management-functions)、[Gamma Ramp 的平台限制](https://learn.microsoft.com/windows/win32/api/wingdi/nf-wingdi-setdevicegammaramp)、[Tauri Windows 打包与 WebView2](https://v2.tauri.app/distribute/windows-installer/)、[NVIDIA NVAPI](https://github.com/NVIDIA/nvapi)。DVC 扩展接口未获得公共 NVAPI SDK 稳定承诺，签名交叉参考 [NvAPIWrapper](https://github.com/falahati/NvAPIWrapper) 与 [NVIDIA_NvAPI](https://github.com/jNizM/NVIDIA_NvAPI)，不支持时明确报错。
 
 MIT License。
