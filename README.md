@@ -12,11 +12,13 @@
 
 ## 程序截图
 
-调色工作台：参考图片分屏对照、RGB 曲线和参数调节。
+以下截图对应最新正式版，由该版本的界面验证流程生成（浏览器预览）。每次成功发布 Release 后自动同步。
+
+调色工作台：参考图片、RGB 曲线、显示器实时调色开关与方案管理。
 
 ![调色工作台](docs/screenshots/workspace.png)
 
-应用设置：登录启动、托盘、退出恢复和游戏进程联动。
+应用设置：登录启动、托盘、退出恢复和默认游戏进程联动。
 
 ![应用设置](docs/screenshots/settings.png)
 
@@ -100,7 +102,7 @@ npm run tauri -- build --target x86_64-pc-windows-msvc
 
 便携 EXE：`target/x86_64-pc-windows-msvc/release/delta-force-filter-manager.exe`；安装版：相邻 `bundle/nsis/`。macOS 可测试核心和预览 HTML，但硬件调节只在 Windows 实现。浏览器运行 `npm run dev` 会明确标注界面预览，不执行系统调色。
 
-GitHub Actions 验证 Rust 核心/控制器、HTML 交互、方案切换、参考图片与原生 WebView IPC，并生成完整/紧凑/设置截图及进程树空闲报告。仓库维护者手动运行工作流、勾选 `publish_release` 后，验证通过会发布带 EXE、ZIP、安装包、SHA256 校验和的普通 Release，并设为 latest。
+GitHub Actions 验证 Rust 核心/控制器、HTML 交互、方案切换、参考图片与原生 WebView IPC，并生成完整/紧凑/设置截图及进程树空闲报告。仓库维护者手动运行工作流、勾选 `publish_release` 后，验证通过会发布带 EXE、ZIP、安装包、SHA256 校验和的普通 Release，并设为 latest。发布成功后，独立任务会将该构建的三张截图同步到默认分支的 `docs/screenshots/`，自动提交 README 引用的图片；同步失败可单独重跑，不会重复发布客户端。
 
 ```text
 crates/filter-core/   参数、曲线、ICC、图片边界、事务、WCS/GDI/NVAPI、自启与进程

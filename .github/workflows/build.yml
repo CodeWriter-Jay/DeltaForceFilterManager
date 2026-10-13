@@ -122,3 +122,41 @@ jobs:
           "@ | Set-Content release-notes.md -Encoding utf8
           gh release create $env:RELEASE_TAG $files SHA256SUMS.txt artifacts/ui/workspace.png artifacts/ui/settings.png artifacts/ui/compact.png artifacts/native/idle.json artifacts/native/smoke.json --target $env:RELEASE_SHA --title "DeltaForce Filter $($env:RELEASE_TAG) · HTML 客户端" --notes-file release-notes.md --latest
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
+  sync_readme_screenshots:
+    name: Sync published release screenshots to README
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeltaForceFilterManager-win-x64
+          path: artifacts
+      - name: Commit screenshots from the verified release build
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $screenshots = @('workspace.png', 'settings.png', 'compact.png')
+          foreach ($name in $screenshots) {
+            if (-not (Test-Path "artifacts/ui/$name" -PathType Leaf)) { throw "Missing release screenshot: $name" }
+          }
+          New-Item -ItemType Directory -Force docs/screenshots | Out-Null
+          foreach ($name in $screenshots) { Copy-Item "artifacts/ui/$name" "docs/screenshots/$name" }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- docs/screenshots/workspace.png docs/screenshots/settings.png docs/screenshots/compact.png
+          if ($LASTEXITCODE -ne 0) { throw 'Staging README screenshots failed.' }
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) { Write-Host 'README screenshots already match the release.'; exit 0 }
+          if ($LASTEXITCODE -ne 1) { throw 'Checking README screenshot changes failed.' }
+          git commit -m "docs: sync app screenshots for $env:RELEASE_TAG [skip ci]"
+          if ($LASTEXITCODE -ne 0) { throw 'Committing README screenshots failed.' }
+          git push origin "HEAD:$env:DEFAULT_BRANCH"
+          if ($LASTEXITCODE -ne 0) { throw 'Pushing README screenshots failed; rerun this job against the latest default branch.' }
